@@ -1,0 +1,81 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-zinc-950 text-emerald-500 font-['Fira_Code',monospace] antialiased;
+    background-image: linear-gradient(rgba(0, 255, 0, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 0, 0.03) 1px, transparent 1px);
+    background-size: 30px 30px;
+    background-position: center center;
+  }
+}
+
+/* Animações CyberSec */
+@keyframes crt-flicker {
+  0% { opacity: 0.95; }
+  5% { opacity: 0.85; }
+  10% { opacity: 0.95; }
+  15% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.crt-overlay {
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: linear-gradient(
+    to bottom,
+    rgba(255,255,255,0),
+    rgba(255,255,255,0) 50%,
+    rgba(0,0,0,0.1) 50%,
+    rgba(0,0,0,0.1)
+  );
+  background-size: 100% 4px;
+  z-index: 9999;
+  animation: crt-flicker 5s infinite;
+}
+
+.scanline {
+  pointer-events: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 20vh;
+  background: linear-gradient(
+    to bottom,
+    rgba(34, 197, 94, 0),
+    rgba(34, 197, 94, 0.05) 50%,
+    rgba(34, 197, 94, 0)
+  );
+  z-index: 9998;
+  animation: scanline 8s linear infinite;
+}
+
+/* Scrollbar Hacker */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #09090b; 
+}
+::-webkit-scrollbar-thumb {
+  background: #064e3b; 
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #059669; 
+}
