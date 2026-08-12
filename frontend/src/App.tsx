@@ -306,7 +306,7 @@ function App() {
                     <table className="min-w-full divide-y divide-emerald-900/30">
                       <thead className="bg-emerald-950/20">
                         <tr>
-                          <th className="py-4 pl-4 pr-3 text-left text-[11px] uppercase tracking-widest text-emerald-600 sm:pl-6">PONTUAÇÃO (SCORE)</th>
+                          <th className="py-4 pl-4 pr-3 text-left text-[11px] uppercase tracking-widest text-emerald-600 sm:pl-6">RISK SCORE (CYBERPULSE)</th>
                           <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">ID DA AMEAÇA</th>
                           <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">DESCRIÇÃO (ALVO)</th>
                           <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">NÍVEL CVSS</th>
