@@ -28,6 +28,10 @@ def fetch_and_save_cisa_kev(db: Session):
         novas = 0
         atualizadas = 0
         
+        # Otimização de Performance: Busca todos de uma vez (1 query em vez de 1665)
+        todos_cves = [item.get("cveID") for item in vulnerabilities]
+        vulns_existentes = {v.cve_id: v for v in db.query(Vulnerability).filter(Vulnerability.cve_id.in_(todos_cves)).all()}
+        
         for item in vulnerabilities:
             cve_id = item.get("cveID")
             
@@ -37,8 +41,8 @@ def fetch_and_save_cisa_kev(db: Session):
             date_added = datetime.strptime(date_added_str, "%Y-%m-%d").date() if date_added_str else None
             due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date() if due_date_str else None
             
-            # Verifica se já existe no nosso banco pelo CVE
-            db_vuln = db.query(Vulnerability).filter(Vulnerability.cve_id == cve_id).first()
+            # Pega do cache em memória (O(1))
+            db_vuln = vulns_existentes.get(cve_id)
             
             if db_vuln:
                 # Atualiza caso já exista

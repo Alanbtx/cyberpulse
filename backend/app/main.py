@@ -120,6 +120,7 @@ scheduler.add_job(run_cisa_job, 'interval', hours=6, id='cisa_job')
 async def lifespan(app: FastAPI):
     scheduler.start()
     run_feeds_job()
+    run_cisa_job()
     run_scoring_job() # Calcula alguns scores no inicio
     yield
     scheduler.shutdown()
