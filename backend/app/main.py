@@ -87,7 +87,7 @@ def run_translation_job():
         db.close()
 
 def run_scoring_job():
-    """Fase 4: Calcula o Score Customizado para vulnerabilidades que ainda não tem"""
+    """Calcula o Score Customizado para vulnerabilidades que ainda não tem"""
     db = SessionLocal()
     try:
         vulns = db.query(Vulnerability).filter(Vulnerability.custom_risk_score == None).limit(50).all()
@@ -148,7 +148,7 @@ from app.collectors.nvd import enrich_cve_with_nvd, fetch_new_cve
 
 @app.get("/api/v1/vulnerabilities")
 def list_vulnerabilities(db: Session = Depends(get_db), limit: int = 50, lang: str = 'en', q: str = None, sort: str = "score"):
-    # Fase 7: Filtro de Busca
+    # Filtro de Busca
     query = db.query(Vulnerability)
     if q:
         search = f"%{q}%"
@@ -164,7 +164,7 @@ def list_vulnerabilities(db: Session = Depends(get_db), limit: int = 50, lang: s
     else:
         vulns = query.order_by(Vulnerability.custom_risk_score.desc().nulls_last()).limit(limit).all()
     
-    # Fase 8: Se a busca estiver vazia e parecer um CVE (CVE-XXXX-XXXX), buscar no NVD em tempo real
+    # Se a busca estiver vazia e parecer um CVE (CVE-XXXX-XXXX), buscar no NVD em tempo real
     if q and len(vulns) == 0 and q.upper().startswith("CVE-"):
         logger.info(f"Pesquisa por {q} retornou 0 resultados. Iniciando busca no NVD...")
         res = fetch_new_cve(db, q.upper())
@@ -203,7 +203,7 @@ def list_advisories(db: Session = Depends(get_db), limit: int = 20, lang: str = 
 
 @app.post("/api/v1/vulnerabilities/{cve_id}/analyze")
 def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None), db: Session = Depends(get_db)):
-    """Fase 5/9: Integração com IA (Google Gemini) usando Token do Cliente"""
+    """Integração com IA (Google Gemini) usando Token do Cliente"""
     if not x_gemini_key:
         raise HTTPException(status_code=401, detail="CHAVE_API_NAO_FORNECIDA: Informe sua chave do Gemini para utilizar a IA.")
         

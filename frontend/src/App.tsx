@@ -31,14 +31,14 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // Fase 7: Search State
+  // Search State
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'score' | 'recent'>('score');
 
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
   const [selectedAdvisory, setSelectedAdvisory] = useState<Advisory | null>(null);
   
-  // Fase 9: API Key State
+  // API Key State
   const [apiKey, setApiKey] = useState('');
   const [isKeySaved, setIsKeySaved] = useState(false);
 

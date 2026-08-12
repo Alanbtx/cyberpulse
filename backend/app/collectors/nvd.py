@@ -74,7 +74,7 @@ def enrich_cve_with_nvd(db: Session, cve_id: str):
 
 def fetch_new_cve(db: Session, cve_id: str):
     """
-    Fase 8: Busca um CVE totalmente novo na API do NVD e o salva no banco.
+    Busca um CVE totalmente novo na API do NVD e o salva no banco.
     """
     logger.info(f"CVE não encontrado no banco. Tentando buscar {cve_id} diretamente do NVD...")
     
