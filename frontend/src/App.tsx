@@ -498,6 +498,17 @@ function App() {
                         </p>
                       )}
                     </div>
+
+                    <div className="mt-4">
+                      <a 
+                        href={`https://nvd.nist.gov/vuln/detail/${selectedVuln.cve_id}`} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 border border-emerald-500/30 bg-emerald-950/10 px-4 py-3 text-xs font-bold text-emerald-500 uppercase tracking-widest hover:bg-emerald-900/40 hover:border-emerald-500 hover:text-emerald-400 transition-all w-full justify-center shadow-[0_0_10px_rgba(16,185,129,0.05)] hover:shadow-[0_0_15px_rgba(16,185,129,0.2)]"
+                      >
+                        &gt;&gt; ACESSAR PÁGINA OFICIAL ({selectedVuln.cve_id})
+                      </a>
+                    </div>
                   </div>
 
                 </div>
