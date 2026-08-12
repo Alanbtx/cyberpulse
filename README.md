@@ -1,6 +1,6 @@
 # CyberPulse - Terminal de Inteligência de Ameaças 🛡️
 
-![CyberPulse Banner](https://via.placeholder.com/1000x300/09090b/10b981?text=CYBERPULSE+TERMINAL)
+![CyberPulse Banner](./docs/banner.png)
 
 > Um agregador de inteligência de ameaças em tempo real construído com estética Hacker/Cyberpunk. Monitoramento global, pontuação de risco customizada e análise de vulnerabilidades alimentada por Inteligência Artificial (Gemini).
 
