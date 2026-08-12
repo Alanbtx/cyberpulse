@@ -12,6 +12,10 @@
 - **Motor de Análise por IA:** Traduz descrições difíceis e ações da CISA para uma linguagem acessível e prática. Segue um padrão de segurança máxima (Zero-Trust para Tokens).
 - **Estética Cyber-Dark:** Terminal retrô com fontes mono-espaçadas, CRT scanlines, e alto contraste neon.
 
+### ⏱️ Nota sobre o Delay da CISA (KEV)
+O catálogo de vulnerabilidades ativamente exploradas (KEV) da CISA possui um delay natural de propagação em sua API (JSON Oficial). Embora as ameaças apareçam imediatamente no [Site HTML da CISA](https://www.cisa.gov/known-exploited-vulnerabilities-catalog), o arquivo de dados consumido globalmente por sistemas de inteligência pode demorar de 4 a 24 horas para ser atualizado pelos servidores do governo americano.
+**Como contornar:** Se você viu uma ameaça urgente no site da CISA que ainda não desceu para a nossa tabela, basta copiar o ID (ex: `CVE-2026-1234`), colar na barra de busca do CyberPulse e dar Enter. Nosso robô fará uma interceptação em tempo real no banco de dados do NVD, baixará a ameaça na hora e permitirá que você use a Inteligência Artificial para analisá-la sem esperar o cache do governo!
+
 ---
 
 ## 📸 Screenshots da Plataforma
