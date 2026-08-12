@@ -101,10 +101,20 @@ def run_scoring_job():
     finally:
         db.close()
 
+def run_cisa_job():
+    db = SessionLocal()
+    try:
+        fetch_and_save_cisa_kev(db)
+    except Exception as e:
+        pass
+    finally:
+        db.close()
+
 scheduler.add_job(run_nvd_enrichment_job, 'interval', seconds=15, id='nvd_job')
 scheduler.add_job(run_feeds_job, 'interval', minutes=10, id='feeds_job')
 scheduler.add_job(run_translation_job, 'interval', seconds=5, id='translate_job')
 scheduler.add_job(run_scoring_job, 'interval', seconds=10, id='scoring_job')
+scheduler.add_job(run_cisa_job, 'interval', hours=6, id='cisa_job')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
