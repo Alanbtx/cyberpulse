@@ -16,14 +16,11 @@
 
 ## 📸 Screenshots da Plataforma
 
-*(Adicione aqui um print da tela inicial mostrando o grid de notícias e a tabela de ameaças)*
-> `![Tela Inicial](./docs/tela_inicial.png)`
+![Tela Inicial](./docs/tela_inicial.png)
 
-*(Adicione aqui um print do Modal detalhando uma ameaça e o botão de análise da Inteligência Artificial)*
-> `![Detalhes da Ameaça](./docs/modal_ameaca.png)`
+![Detalhes da Ameaça](./docs/modal_ameaca.png)
 
-*(Adicione aqui um print demonstrando a pesquisa em tempo real de um novo CVE)*
-> `![Busca Real-Time](./docs/busca_cve.png)`
+![Busca Real-Time](./docs/busca_cve.png)
 
 ---
 
