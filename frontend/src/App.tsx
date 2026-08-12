@@ -33,6 +33,7 @@ function App() {
   
   // Fase 7: Search State
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'score' | 'recent'>('score');
 
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
   const [selectedAdvisory, setSelectedAdvisory] = useState<Advisory | null>(null);
@@ -45,10 +46,10 @@ function App() {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  const fetchData = (q: string = '') => {
+  const fetchData = (q: string = '', sortMode: string = sortBy) => {
     setLoading(true);
     const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-    let vulnsUrl = `${API_BASE_URL}/api/v1/vulnerabilities?lang=pt-br`;
+    let vulnsUrl = `${API_BASE_URL}/api/v1/vulnerabilities?lang=pt-br&sort=${sortMode}`;
     if (q) vulnsUrl += `&q=${encodeURIComponent(q)}`;
     
     Promise.all([
@@ -80,7 +81,12 @@ function App() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchData(searchQuery);
+    fetchData(searchQuery, sortBy);
+  };
+
+  const handleSortChange = (newSort: 'score' | 'recent') => {
+    setSortBy(newSort);
+    fetchData(searchQuery, newSort);
   };
 
   const saveApiKey = () => {
@@ -254,7 +260,21 @@ function App() {
                   <div className="flex items-center gap-3 w-full sm:w-auto">
                     <div className="h-0.5 w-12 bg-emerald-900/50"></div>
                     <h2 className="text-xl font-bold text-red-500 uppercase tracking-[0.2em] drop-shadow-[0_0_8px_rgba(239,68,68,0.5)] whitespace-nowrap">AMEAÇAS ATIVAS</h2>
-                    <div className="h-0.5 flex-grow bg-emerald-900/50 hidden sm:block"></div>
+                    <div className="flex gap-2 ml-2">
+                      <button 
+                        onClick={() => handleSortChange('score')} 
+                        className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'score' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
+                      >
+                        CRITICIDADE
+                      </button>
+                      <button 
+                        onClick={() => handleSortChange('recent')} 
+                        className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'recent' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
+                      >
+                        CISA_RECENTES
+                      </button>
+                    </div>
+                    <div className="h-0.5 flex-grow bg-emerald-900/50 hidden lg:block"></div>
                   </div>
                   
                   {/* Busca Hacker */}
@@ -313,7 +333,11 @@ function App() {
                               </td>
                               <td className="py-4 px-3 text-sm">
                                 <div className="font-medium text-zinc-300 max-w-sm truncate uppercase group-hover:text-white" title={vuln.title}>{vuln.title}</div>
-                                <div className="text-[10px] text-zinc-500 mt-1 tracking-widest">ALVO: {vuln.vendor} {vuln.product}</div>
+                                <div className="text-[10px] text-zinc-500 mt-1 tracking-widest flex items-center gap-2">
+                                  <span>ALVO: {vuln.vendor} {vuln.product}</span>
+                                  <span className="text-zinc-700">|</span>
+                                  <span className="text-emerald-600">CISA: {vuln.cisa_date_added ? formatDate(vuln.cisa_date_added) : 'N/A'}</span>
+                                </div>
                               </td>
                               <td className="whitespace-nowrap py-4 px-3 text-xs">
                                 {getSeverityBadge(vuln.severity)}

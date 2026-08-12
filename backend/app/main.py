@@ -146,7 +146,7 @@ def health_check():
 from app.collectors.nvd import enrich_cve_with_nvd, fetch_new_cve
 
 @app.get("/api/v1/vulnerabilities")
-def list_vulnerabilities(db: Session = Depends(get_db), limit: int = 50, lang: str = 'en', q: str = None):
+def list_vulnerabilities(db: Session = Depends(get_db), limit: int = 50, lang: str = 'en', q: str = None, sort: str = "score"):
     # Fase 7: Filtro de Busca
     query = db.query(Vulnerability)
     if q:
@@ -158,15 +158,20 @@ def list_vulnerabilities(db: Session = Depends(get_db), limit: int = 50, lang: s
             (Vulnerability.product.ilike(search))
         )
     
-    vulns = query.order_by(Vulnerability.custom_risk_score.desc().nulls_last()).limit(limit).all()
+    if sort == "recent":
+        vulns = query.order_by(Vulnerability.cisa_date_added.desc().nulls_last()).limit(limit).all()
+    else:
+        vulns = query.order_by(Vulnerability.custom_risk_score.desc().nulls_last()).limit(limit).all()
     
     # Fase 8: Se a busca estiver vazia e parecer um CVE (CVE-XXXX-XXXX), buscar no NVD em tempo real
     if q and len(vulns) == 0 and q.upper().startswith("CVE-"):
         logger.info(f"Pesquisa por {q} retornou 0 resultados. Iniciando busca no NVD...")
         res = fetch_new_cve(db, q.upper())
         if res.get("status") == "success":
-            # Repete a busca local agora que já foi salvo!
-            vulns = query.order_by(Vulnerability.custom_risk_score.desc().nulls_last()).limit(limit).all()
+            if sort == "recent":
+                vulns = query.order_by(Vulnerability.cisa_date_added.desc().nulls_last()).limit(limit).all()
+            else:
+                vulns = query.order_by(Vulnerability.custom_risk_score.desc().nulls_last()).limit(limit).all()
     
     if lang == 'pt-br':
         result = []
