@@ -47,12 +47,13 @@ function App() {
 
   const fetchData = (q: string = '') => {
     setLoading(true);
-    let vulnsUrl = `http://localhost:8000/api/v1/vulnerabilities?lang=pt-br`;
+    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    let vulnsUrl = `${API_BASE_URL}/api/v1/vulnerabilities?lang=pt-br`;
     if (q) vulnsUrl += `&q=${encodeURIComponent(q)}`;
     
     Promise.all([
       fetch(vulnsUrl).then(res => res.json()),
-      fetch(`http://localhost:8000/api/v1/advisories?lang=pt-br`).then(res => res.json())
+      fetch(`${API_BASE_URL}/api/v1/advisories?lang=pt-br`).then(res => res.json())
     ])
       .then(([vulnsData, advisoriesData]) => {
         setVulns(vulnsData);
@@ -132,7 +133,9 @@ function App() {
     setAiError(null);
     setAiAnalysis(null);
     
-    fetch(`http://localhost:8000/api/v1/vulnerabilities/${cve_id}/analyze`, { 
+    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    
+    fetch(`${API_BASE_URL}/api/v1/vulnerabilities/${cve_id}/analyze`, { 
       method: 'POST',
       headers: {
         'X-Gemini-Key': apiKey.trim()
