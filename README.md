@@ -9,7 +9,7 @@
 ## 🌐 Acesse a Plataforma ao Vivo (Live Demo)
 O projeto já está hospedado e funcionando 24/7 na nuvem. Você pode testar todas as funcionalidades diretamente pelo navegador:
 
-👉 **[ACESSAR CYBERPULSE AGORA](https://cyberpulse-git-main-bymail.vercel.app/)** *(Link de Produção)*
+👉 **[ACESSAR CYBERPULSE AGORA](https://cyberpulse-ochre.vercel.app)** *(Link de Produção)*
 
 ---
 
