@@ -225,11 +225,12 @@ def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None),
         Título: {vuln.title}
         Descrição Técnica Original: {vuln.description}
         Ação Exigida (CISA): {vuln.cisa_required_action}
+        Sendo explorada ativamente por hackers: {"SIM (CISA KEV)" if vuln.known_exploited else "NÃO / DESCONHECIDO"}
         
         Sua tarefa é explicar isso de forma extremamente simples, didática e acessível (como se explicasse para um leigo), sem jargões confusos. Responda ESTRITAMENTE no formato abaixo, sem usar "#" ou "###" para títulos. Use apenas **Texto** para os títulos:
         
         **O QUE É A VULNERABILIDADE**
-        [Sua explicação da falha, usando uma analogia simples e explicando o impacto]
+        [OBRIGATÓRIO: Informe logo na primeira frase, de maneira bem destacada, se esta falha já está sendo usada por hackers ativamente no mundo real (baseado no campo 'Sendo explorada ativamente' acima). Em seguida, dê a sua explicação da falha, usando uma analogia simples e explicando o impacto]
         
         **COMO VERIFICAR SE VOCÊ ESTÁ VULNERÁVEL**
         [ATENÇÃO: VOCÊ DEVE BUSCAR NA SUA BASE DE CONHECIMENTO INFORMAÇÕES REAIS SOBRE ESTE CVE ESPECÍFICO. 
