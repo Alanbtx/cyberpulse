@@ -226,19 +226,23 @@ def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None),
         Descrição Técnica Original: {vuln.description}
         Ação Exigida (CISA): {vuln.cisa_required_action}
         
-        Sua tarefa é explicar isso de forma extremamente simples, didática e acessível (como se explicasse para um leigo), sem jargões confusos. Responda em 3 tópicos obrigatórios, cada um com o título em negrito markdown (envolvido por **):
+        Sua tarefa é explicar isso de forma extremamente simples, didática e acessível (como se explicasse para um leigo), sem jargões confusos. Responda ESTRITAMENTE no formato abaixo, sem usar "#" ou "###" para títulos. Use apenas **Texto** para os títulos:
         
-        **O QUE É A VULNERABILIDADE**: explicar o que a falha faz de forma tecnicamente correta, mas voltada para alguém que é totalmente leigo em segurança da informação. Deve citar o tipo técnico da falha (execução remota de código, escalonamento de privilégio, bypass de autenticação, vazamento de dados, etc), traduzir esse termo em uma frase simples, usar uma analogia curta do mundo real, e explicar o que um atacante consegue fazer e por que isso é perigoso. Não usar jargão sem explicar.
+        **O QUE É A VULNERABILIDADE**
+        [Sua explicação da falha, usando uma analogia simples e explicando o impacto]
         
-        **COMO VERIFICAR SE VOCÊ ESTÁ VULNERÁVEL**: passo a passo prático com comandos reais e específicos ao produto/fabricante/SO. OBRIGATÓRIO: Se for uma vulnerabilidade do Windows, liste explicitamente quais são os KBs vulneráveis (ou as versões) e ensine o comando exato de como o usuário descobre se o PC dele possui aquele KB/versão instalado (ex: Get-HotFix, winver). Se for Linux, software ou biblioteca (ex: Adobe, Apache, Java, OpenSSL, etc), liste as versões vulneráveis e dê o comando ou caminho exato (ex: java -version, dpkg -l, menu "Ajuda > Sobre") para o usuário descobrir a versão atual que ele tem instalada e poder comparar. Coloque os comandos em blocos de código markdown.
+        **COMO VERIFICAR SE VOCÊ ESTÁ VULNERÁVEL**
+        [Passo a passo prático com comandos reais e específicos ao produto/fabricante/SO. OBRIGATÓRIO: Se for uma vulnerabilidade do Windows, liste explicitamente quais são os KBs vulneráveis (ou as versões) e ensine o comando exato de como o usuário descobre se o PC dele possui aquele KB/versão instalado (ex: Get-HotFix, winver). Se for Linux, software ou biblioteca (ex: Adobe, Apache, Java, OpenSSL, etc), liste as versões vulneráveis e dê o comando ou caminho exato (ex: java -version, dpkg -l, menu "Ajuda > Sobre") para o usuário descobrir a versão atual que ele tem instalada e poder comparar. Coloque os comandos em blocos de código markdown.]
         
-        **PLANO DE AÇÃO**: traduzir a ação da CISA (ou mitigação técnica) em passos numerados e práticos.
+        **PLANO DE AÇÃO**
+        [Traduzir a ação da CISA ou mitigação técnica em passos numerados e práticos]
         
         REGRAS IMPORTANTES: 
         - Responda em Português do Brasil (PT-BR).
         - NÃO adivinhe a profissão do leitor e não use tratamentos (NÃO chame de "analista", "júnior", "amigo", etc).
-        - NÃO adicione saudações ou despedidas conversacionais (NÃO diga "olá", nem peça para conversar com você no final). Apenas entregue a explicação formatada.
+        - NÃO adicione saudações ou despedidas. Apenas entregue a explicação formatada.
         - Use listas com "-" ou números sempre que houver múltiplos itens.
+        - NÃO altere os títulos das seções. Eles devem ser EXATAMENTE os três descritos acima, em letras maiúsculas e entre **.
         """
         
         response = model.generate_content(prompt)
