@@ -16,18 +16,8 @@ interface Vulnerability {
   custom_risk_score: number | null;
 }
 
-interface Advisory {
-  id: number;
-  title: string;
-  vendor: string;
-  description: string;
-  source_url: string;
-  published_at: string | null;
-}
-
 function App() {
   const [vulns, setVulns] = useState<Vulnerability[]>([]);
-  const [advisories, setAdvisories] = useState<Advisory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
@@ -36,7 +26,6 @@ function App() {
   const [sortBy, setSortBy] = useState<'score' | 'recent'>('score');
 
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
-  const [selectedAdvisory, setSelectedAdvisory] = useState<Advisory | null>(null);
   
   // API Key State
   const [apiKey, setApiKey] = useState('');
@@ -52,13 +41,10 @@ function App() {
     let vulnsUrl = `${API_BASE_URL}/api/v1/vulnerabilities?lang=pt-br&sort=${sortMode}`;
     if (q) vulnsUrl += `&q=${encodeURIComponent(q)}`;
     
-    Promise.all([
-      fetch(vulnsUrl).then(res => res.json()),
-      fetch(`${API_BASE_URL}/api/v1/advisories?lang=pt-br`).then(res => res.json())
-    ])
-      .then(([vulnsData, advisoriesData]) => {
+    fetch(vulnsUrl)
+      .then(res => res.json())
+      .then(vulnsData => {
         setVulns(vulnsData);
-        setAdvisories(advisoriesData);
         setLoading(false);
       })
       .catch(err => {
@@ -290,7 +276,6 @@ function App() {
 
   const closeModal = () => {
     setSelectedVuln(null);
-    setSelectedAdvisory(null);
     setAiAnalysis(null);
     setAiError(null);
   };
@@ -334,48 +319,7 @@ function App() {
           ) : (
             <div className="space-y-12">
               
-              {/* Notícias e Alertas (RSS) */}
-              <section>
-                <div className="mb-6 flex items-center gap-3">
-                  <div className="h-0.5 flex-grow bg-emerald-900/50"></div>
-                  <h2 className="text-xl font-bold text-emerald-400 uppercase tracking-[0.2em]">FONTES DE NOTÍCIAS (INTEL)</h2>
-                  <div className="h-0.5 w-12 bg-emerald-900/50"></div>
-                </div>
-                
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  {advisories.map(adv => (
-                    <div 
-                      key={adv.id} 
-                      onClick={() => setSelectedAdvisory(adv)}
-                      className="block group h-full cursor-pointer"
-                    >
-                      <div className="bg-zinc-950 p-4 border border-emerald-900/40 group-hover:border-emerald-500/70 group-hover:bg-emerald-950/20 transition-all group-hover:shadow-[0_0_15px_rgba(16,185,129,0.15)] h-full flex flex-col relative overflow-hidden">
-                        
-                        {/* Decoradores Hacker */}
-                        <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <div className="absolute top-0 right-0 w-2 h-2 border-t border-r border-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <div className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
 
-                        <div className="flex justify-between items-start mb-2">
-                          <span className="text-[9px] uppercase tracking-widest text-zinc-400">
-                            FONTE: <span className="text-emerald-500">{adv.vendor}</span>
-                          </span>
-                          <span className="text-[9px] text-zinc-500">{formatDate(adv.published_at)}</span>
-                        </div>
-                        
-                        <h3 className="font-bold text-zinc-200 text-xs mb-3 group-hover:text-emerald-400 transition-colors line-clamp-3 uppercase flex-grow" title={adv.title}>
-                          {adv.title}
-                        </h3>
-                        
-                        <div className="flex justify-end mt-auto pt-2 border-t border-emerald-900/20">
-                          <span className="text-[9px] font-bold text-emerald-700 group-hover:text-emerald-400 transition-colors uppercase tracking-widest">LER AVISO &gt;&gt;</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
 
               {/* Tabela de Vulnerabilidades e Busca */}
               <section>
@@ -644,53 +588,7 @@ function App() {
           </div>
         )}
 
-        {/* MODAL NOTÍCIA (ADVISORY) */}
-        {selectedAdvisory && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm transition-opacity">
-            <div className="bg-zinc-950 border border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.2)] w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col relative animate-in fade-in zoom-in-95 duration-200">
-              
-              <div className="bg-emerald-950/50 border-b border-emerald-900/50 p-2 flex justify-between items-center">
-                <div className="flex gap-2 items-center px-2">
-                  <span className="text-emerald-500 font-bold text-xs uppercase animate-pulse">● FEED_DE_NOTÍCIAS</span>
-                </div>
-                <button 
-                  onClick={closeModal}
-                  className="text-emerald-500 hover:text-white hover:bg-emerald-700 px-3 py-1 text-xs font-bold transition-colors uppercase border border-transparent hover:border-emerald-400"
-                >
-                  [X] FECHAR
-                </button>
-              </div>
 
-              <div className="overflow-y-auto p-6 sm:p-8 flex-grow cyber-scrollbar">
-                
-                <div className="mb-6 pb-4 border-b border-emerald-900/30">
-                  <span className="text-[10px] uppercase tracking-widest text-zinc-400 bg-zinc-900 px-2 py-1 border border-zinc-800">
-                    FONTE: <span className="text-emerald-500">{selectedAdvisory.vendor}</span>
-                  </span>
-                  <span className="text-[10px] text-zinc-500 ml-4">{formatDate(selectedAdvisory.published_at)}</span>
-                  
-                  <h2 className="text-xl font-bold text-white uppercase tracking-wide mt-4">{selectedAdvisory.title}</h2>
-                </div>
-
-                <div className="text-zinc-300 text-sm leading-relaxed prose prose-invert max-w-none font-sans">
-                  <div dangerouslySetInnerHTML={{ __html: selectedAdvisory.description }} />
-                </div>
-
-                <div className="mt-8 pt-4 border-t border-emerald-900/30 flex justify-end">
-                  <a 
-                    href={selectedAdvisory.source_url} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="text-[10px] text-emerald-600 hover:text-emerald-400 font-bold tracking-widest uppercase flex items-center gap-2"
-                  >
-                    ACESSAR_FONTE_ORIGINAL &gt;&gt;
-                  </a>
-                </div>
-
-              </div>
-            </div>
-          </div>
-        )}
 
       </div>
     </>
