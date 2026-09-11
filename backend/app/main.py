@@ -247,7 +247,16 @@ def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None),
         - NÃO altere os títulos das seções. Eles devem ser EXATAMENTE os três descritos acima, em letras maiúsculas e entre **.
         """
         
-        response = model.generate_content(prompt)
+        try:
+            # Tenta usar o modelo PRO e ativar a busca no Google (Search Grounding) para encontrar o KB real
+            model = genai.GenerativeModel('gemini-3.5-pro')
+            response = model.generate_content(prompt, tools="google_search_retrieval")
+        except Exception as e_search:
+            logger.warning(f"Erro ao usar modelo PRO ou Search: {e_search}. Fazendo fallback para flash e sem search...")
+            # Fallback para o flash sem busca
+            model = genai.GenerativeModel('gemini-3.5-flash')
+            response = model.generate_content(prompt)
+            
         return {"cve_id": cve_id, "ai_analysis": response.text}
         
     except Exception as e:
