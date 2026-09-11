@@ -430,7 +430,7 @@ function App() {
         {/* MODAL IA / TERMINAL DE DETALHES DA VULNERABILIDADE */}
         {selectedVuln && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm transition-opacity">
-            <div className="bg-zinc-950 border border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.2)] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col relative animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-zinc-950 border border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.2)] w-full max-w-[95vw] max-h-[95vh] overflow-hidden flex flex-col relative animate-in fade-in zoom-in-95 duration-200">
               
               {/* Top Bar Terminal */}
               <div className="bg-emerald-950/50 border-b border-emerald-900/50 p-2 flex justify-between items-center">
@@ -462,11 +462,51 @@ function App() {
                   </div>
                 </div>
 
-                <div className="flex flex-col lg:flex-row gap-8">
+                <div className="flex flex-col gap-8">
                   
-                  {/* Coluna Esquerda: IA */}
-                  <div className="lg:w-3/5 flex flex-col gap-6">
-                    <div className="border border-blue-500/30 bg-blue-950/10 flex flex-col relative overflow-hidden h-full max-h-[60vh]">
+                  {/* Top Row: Dados Brutos */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="border border-zinc-800 bg-zinc-900/50 p-4 flex flex-col">
+                      <h4 className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-3 border-b border-zinc-800 pb-2 flex-shrink-0">
+                        DESCRIÇÃO_TÉCNICA_BRUTA
+                      </h4>
+                      <p className="text-zinc-400 text-xs leading-relaxed font-sans overflow-y-auto max-h-32 cyber-scrollbar">
+                        {selectedVuln.description || 'N/A'}
+                      </p>
+                    </div>
+
+                    <div className="border border-orange-500/30 bg-orange-950/20 p-4 relative flex flex-col">
+                      <div className="absolute top-0 left-0 w-1 h-full bg-orange-500"></div>
+                      <h4 className="text-[10px] font-bold text-orange-500 uppercase tracking-widest mb-3 border-b border-orange-900/50 pb-2 flex-shrink-0">
+                        AÇÃO_OBRIGATÓRIA_CISA
+                      </h4>
+                      <div className="overflow-y-auto max-h-32 cyber-scrollbar">
+                        <p className="text-orange-200 text-xs leading-relaxed font-sans font-medium">
+                          {selectedVuln.cisa_required_action || 'NENHUMA DIRETIVA ENCONTRADA.'}
+                        </p>
+                        {selectedVuln.cisa_due_date && (
+                          <p className="text-orange-500 text-[10px] mt-4 font-bold tracking-widest bg-black inline-block px-2 py-1 border border-orange-900">
+                            PRAZO FINAL: {formatDate(selectedVuln.cisa_due_date)}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col justify-end">
+                      <a 
+                        href={`https://www.cve.org/CVERecord?id=${selectedVuln.cve_id}`} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-2 border border-emerald-500/30 bg-emerald-950/10 px-4 py-3 text-xs font-bold text-emerald-500 uppercase tracking-widest hover:bg-emerald-900/40 hover:border-emerald-500 hover:text-emerald-400 transition-all w-full justify-center shadow-[0_0_10px_rgba(16,185,129,0.05)] hover:shadow-[0_0_15px_rgba(16,185,129,0.2)]"
+                      >
+                        &gt;&gt; ACESSAR PÁGINA OFICIAL ({selectedVuln.cve_id})
+                      </a>
+                    </div>
+                  </div>
+
+                  {/* Bottom Area: IA */}
+                  <div className="flex flex-col gap-6 w-full flex-grow mt-4">
+                    <div className="border border-blue-500/30 bg-blue-950/10 flex flex-col relative overflow-hidden min-h-[50vh]">
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-indigo-600 z-10"></div>
                       
                       {/* Cabeçalho Fixo */}
@@ -479,7 +519,6 @@ function App() {
                             <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest">Executa roteiro de tradução com IA Gemini.</p>
                           </div>
                           
-                          {/* Se o token estiver salvo, mostra o botão. Senão, mostra input */}
                           {isKeySaved ? (
                             !aiAnalysis && !isAiLoading && (
                               <div className="flex flex-col items-end gap-2">
@@ -519,7 +558,8 @@ function App() {
                         {isAiLoading && (
                           <div className="text-xs text-blue-400 font-mono flex flex-col gap-2">
                             <div><span className="text-zinc-500">[SISTEMA]</span> Autenticando Token...</div>
-                            <div><span className="text-zinc-500">[SISTEMA]</span> Analisando vetores de vulnerabilidade...</div>
+                            <div><span className="text-zinc-500">[SISTEMA]</span> Executando pesquisa online em bases de ameaças...</div>
+                            <div><span className="text-zinc-500">[SISTEMA]</span> Analisando vetores de vulnerabilidade e extraindo KBs...</div>
                             <div className="animate-pulse flex items-center gap-2 mt-2">
                               <div className="w-2 h-4 bg-blue-500 animate-bounce"></div> GERANDO RESPOSTA...
                             </div>
@@ -543,45 +583,6 @@ function App() {
                       </div>
                     </div>
                   </div>
-
-                  {/* Coluna Direita: Dados Brutos */}
-                  <div className="lg:w-2/5 space-y-6">
-                    <div className="border border-zinc-800 bg-zinc-900/50 p-4">
-                      <h4 className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-3 border-b border-zinc-800 pb-2">
-                        DESCRIÇÃO_TÉCNICA_BRUTA
-                      </h4>
-                      <p className="text-zinc-400 text-xs leading-relaxed font-sans">
-                        {selectedVuln.description || 'N/A'}
-                      </p>
-                    </div>
-
-                    <div className="border border-orange-500/30 bg-orange-950/20 p-4 relative">
-                      <div className="absolute top-0 left-0 w-1 h-full bg-orange-500"></div>
-                      <h4 className="text-[10px] font-bold text-orange-500 uppercase tracking-widest mb-3 border-b border-orange-900/50 pb-2">
-                        AÇÃO_OBRIGATÓRIA_CISA
-                      </h4>
-                      <p className="text-orange-200 text-xs leading-relaxed font-sans font-medium">
-                        {selectedVuln.cisa_required_action || 'NENHUMA DIRETIVA ENCONTRADA.'}
-                      </p>
-                      {selectedVuln.cisa_due_date && (
-                        <p className="text-orange-500 text-[10px] mt-4 font-bold tracking-widest bg-black inline-block px-2 py-1 border border-orange-900">
-                          PRAZO FINAL: {formatDate(selectedVuln.cisa_due_date)}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="mt-4">
-                      <a 
-                        href={`https://www.cve.org/CVERecord?id=${selectedVuln.cve_id}`} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-2 border border-emerald-500/30 bg-emerald-950/10 px-4 py-3 text-xs font-bold text-emerald-500 uppercase tracking-widest hover:bg-emerald-900/40 hover:border-emerald-500 hover:text-emerald-400 transition-all w-full justify-center shadow-[0_0_10px_rgba(16,185,129,0.05)] hover:shadow-[0_0_15px_rgba(16,185,129,0.2)]"
-                      >
-                        &gt;&gt; ACESSAR PÁGINA OFICIAL ({selectedVuln.cve_id})
-                      </a>
-                    </div>
-                  </div>
-
                 </div>
               </div>
             </div>

@@ -217,7 +217,7 @@ def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None),
         model = genai.GenerativeModel('gemini-3.5-flash')
         
         prompt = f"""
-        Você é um sistema de Inteligência de Ameaças focado em simplificar problemas complexos de segurança para pessoas leigas.
+        Você é um sistema de Inteligência de Ameaças focado em simplificar problemas complexos de segurança para pessoas leigas e fornecer ações extremamente diretas.
         Abaixo estão os detalhes de uma vulnerabilidade extraídos do NVD e da CISA:
         
         CVE: {vuln.cve_id}
@@ -232,7 +232,9 @@ def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None),
         [Sua explicação da falha, usando uma analogia simples e explicando o impacto]
         
         **COMO VERIFICAR SE VOCÊ ESTÁ VULNERÁVEL**
-        [Passo a passo prático com comandos reais e específicos ao produto/fabricante/SO. OBRIGATÓRIO: Se for uma vulnerabilidade do Windows, liste explicitamente quais são os KBs vulneráveis (ou as versões) e ensine o comando exato de como o usuário descobre se o PC dele possui aquele KB/versão instalado (ex: Get-HotFix, winver). Se for Linux, software ou biblioteca (ex: Adobe, Apache, Java, OpenSSL, etc), liste as versões vulneráveis e dê o comando ou caminho exato (ex: java -version, dpkg -l, menu "Ajuda > Sobre") para o usuário descobrir a versão atual que ele tem instalada e poder comparar. Coloque os comandos em blocos de código markdown.]
+        [ATENÇÃO: VOCÊ DEVE BUSCAR NA SUA BASE DE CONHECIMENTO INFORMAÇÕES REAIS SOBRE ESTE CVE ESPECÍFICO. 
+        Passo a passo prático com comandos reais e específicos ao produto/fabricante/SO. 
+        OBRIGATÓRIO: Se for uma vulnerabilidade do Windows, DEVE LISTAR explicitamente quais são os números de KB (ex: KB5001234) da Microsoft afetados ou as versões. Não dê respostas genéricas como "veja no site do fabricante". Diga o KB exato e ensine o comando (ex: Get-HotFix). Se for Linux, software ou biblioteca, liste as versões vulneráveis exatas da sua pesquisa e dê o comando ou caminho exato para o usuário descobrir a versão atual. Coloque os comandos em blocos de código markdown.]
         
         **PLANO DE AÇÃO**
         [Traduzir a ação da CISA ou mitigação técnica em passos numerados e práticos]
