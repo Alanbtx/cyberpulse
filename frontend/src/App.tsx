@@ -132,6 +132,129 @@ function App() {
     return tmp.textContent || tmp.innerText || "";
   };
 
+  const renderAiAnalysis = (text: string) => {
+    const lines = text.split('\n');
+    let inCodeBlock = false;
+    let codeContent: string[] = [];
+    const elements: React.ReactNode[] = [];
+    let currentList: React.ReactNode[] = [];
+    let isOrderedList = false;
+
+    const flushList = () => {
+      if (currentList.length > 0) {
+        elements.push(
+          isOrderedList ? (
+            <ol key={`ol-${elements.length}`} className="list-decimal list-outside ml-6 mb-4 text-zinc-300 font-sans leading-relaxed text-base opacity-90 marker:text-blue-500">
+              {currentList}
+            </ol>
+          ) : (
+            <ul key={`ul-${elements.length}`} className="list-disc list-outside ml-6 mb-4 text-zinc-300 font-sans leading-relaxed text-base opacity-90 marker:text-blue-500">
+              {currentList}
+            </ul>
+          )
+        );
+        currentList = [];
+      }
+    };
+
+    lines.forEach((line, index) => {
+      const trimmedLine = line.trim();
+
+      if (trimmedLine.startsWith('```')) {
+        flushList();
+        if (inCodeBlock) {
+          elements.push(
+            <pre key={`code-${index}`} className="bg-black text-emerald-400 p-4 rounded-md mb-4 overflow-x-auto font-mono text-sm border border-emerald-900/50 shadow-inner">
+              <code>{codeContent.join('\n')}</code>
+            </pre>
+          );
+          codeContent = [];
+          inCodeBlock = false;
+        } else {
+          inCodeBlock = true;
+        }
+        return;
+      }
+
+      if (inCodeBlock) {
+        codeContent.push(line);
+        return;
+      }
+
+      const headingMatch = trimmedLine.match(/^\*\*(.+?)\*\*$/);
+      if (headingMatch) {
+        flushList();
+        elements.push(
+          <h4 key={`h4-${index}`} className="text-lg font-bold text-blue-400 mt-6 mb-3 uppercase tracking-wide border-l-2 border-blue-500 pl-3">
+            {headingMatch[1]}
+          </h4>
+        );
+        return;
+      }
+      
+      const inlineHeadingMatch = trimmedLine.match(/^(?:#+\s*)?\*\*(.+?)\*\*:?\s*(.*)$/);
+      if (inlineHeadingMatch && !trimmedLine.match(/^[-*1-9]/)) {
+         if (!inlineHeadingMatch[2]) {
+             flushList();
+             elements.push(
+               <h4 key={`h4-${index}`} className="text-lg font-bold text-blue-400 mt-6 mb-3 uppercase tracking-wide border-l-2 border-blue-500 pl-3">
+                 {inlineHeadingMatch[1]}
+               </h4>
+             );
+             return;
+         }
+      }
+
+      const ulMatch = trimmedLine.match(/^[-*]\s+(.*)$/);
+      if (ulMatch) {
+        if (isOrderedList) flushList();
+        isOrderedList = false;
+        currentList.push(
+          <li key={`li-${index}`} className="mb-1">{ulMatch[1]}</li>
+        );
+        return;
+      }
+
+      const olMatch = trimmedLine.match(/^(\d+)\.\s+(.*)$/);
+      if (olMatch) {
+        if (!isOrderedList) flushList();
+        isOrderedList = true;
+        currentList.push(
+          <li key={`li-${index}`} className="mb-1">{olMatch[2]}</li>
+        );
+        return;
+      }
+
+      if (trimmedLine !== '') {
+        flushList();
+        const renderInlineStyles = (text: string) => {
+          const parts = text.split(/(\*\*.*?\*\*)/g);
+          return parts.map((part, i) => {
+            if (part.startsWith('**') && part.endsWith('**')) {
+              return <strong key={i} className="text-zinc-100 font-bold">{part.slice(2, -2)}</strong>;
+            }
+            const codeParts = part.split(/(`.*?`)/g);
+            return codeParts.map((cp, j) => {
+                if (cp.startsWith('`') && cp.endsWith('`')) {
+                    return <code key={`${i}-${j}`} className="bg-zinc-800 text-emerald-300 px-1 py-0.5 rounded text-sm font-mono">{cp.slice(1, -1)}</code>;
+                }
+                return cp;
+            });
+          });
+        };
+
+        elements.push(
+          <p key={`p-${index}`} className="mb-4 text-zinc-300 font-sans leading-relaxed text-base opacity-90">
+            {renderInlineStyles(trimmedLine)}
+          </p>
+        );
+      }
+    });
+
+    flushList();
+    return elements;
+  };
+
   const handleAskAI = (cve_id: string) => {
     if (!isKeySaved) return;
     
@@ -363,7 +486,7 @@ function App() {
         {/* MODAL IA / TERMINAL DE DETALHES DA VULNERABILIDADE */}
         {selectedVuln && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm transition-opacity">
-            <div className="bg-zinc-950 border border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.2)] w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col relative animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-zinc-950 border border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.2)] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col relative animate-in fade-in zoom-in-95 duration-200">
               
               {/* Top Bar Terminal */}
               <div className="bg-emerald-950/50 border-b border-emerald-900/50 p-2 flex justify-between items-center">
@@ -399,77 +522,81 @@ function App() {
                   
                   {/* Coluna Esquerda: IA */}
                   <div className="lg:w-3/5 flex flex-col gap-6">
-                    <div className="border border-blue-500/30 bg-blue-950/10 p-5 relative overflow-hidden">
-                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-indigo-600"></div>
+                    <div className="border border-blue-500/30 bg-blue-950/10 flex flex-col relative overflow-hidden h-full max-h-[60vh]">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-indigo-600 z-10"></div>
                       
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
-                        <div>
-                          <h3 className="font-bold text-blue-400 flex items-center gap-2 uppercase tracking-wider text-sm">
-                            <span className="animate-spin text-lg">⚙</span> MOTOR_DE_ANALISE_IA
-                          </h3>
-                          <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest">Executa roteiro de tradução com IA Gemini.</p>
-                        </div>
-                        
-                        {/* Se o token estiver salvo, mostra o botão. Senão, mostra input */}
-                        {isKeySaved ? (
-                          !aiAnalysis && !isAiLoading && (
-                            <div className="flex flex-col items-end gap-2">
-                              <button 
-                                onClick={() => handleAskAI(selectedVuln.cve_id)}
-                                className="bg-black border border-blue-500 text-blue-400 hover:bg-blue-500 hover:text-black hover:shadow-[0_0_15px_rgba(59,130,246,0.6)] font-bold py-2 px-4 transition-all text-xs uppercase tracking-widest flex-shrink-0"
-                              >
-                                &gt;_ EXECUTAR_SIMPLIFICACAO.SH
-                              </button>
-                              <button onClick={removeApiKey} className="text-[9px] text-zinc-500 hover:text-red-400 uppercase tracking-widest underline">Desconectar Token</button>
+                      {/* Cabeçalho Fixo */}
+                      <div className="p-5 border-b border-blue-900/50 bg-blue-950/20 sticky top-0 z-10 flex-shrink-0">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <div>
+                            <h3 className="font-bold text-blue-400 flex items-center gap-2 uppercase tracking-wider text-sm">
+                              <span className="animate-spin text-lg">⚙</span> MOTOR_DE_ANALISE_IA
+                            </h3>
+                            <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest">Executa roteiro de tradução com IA Gemini.</p>
+                          </div>
+                          
+                          {/* Se o token estiver salvo, mostra o botão. Senão, mostra input */}
+                          {isKeySaved ? (
+                            !aiAnalysis && !isAiLoading && (
+                              <div className="flex flex-col items-end gap-2">
+                                <button 
+                                  onClick={() => handleAskAI(selectedVuln.cve_id)}
+                                  className="bg-black border border-blue-500 text-blue-400 hover:bg-blue-500 hover:text-black hover:shadow-[0_0_15px_rgba(59,130,246,0.6)] font-bold py-2 px-4 transition-all text-xs uppercase tracking-widest flex-shrink-0"
+                                >
+                                  &gt;_ EXECUTAR_SIMPLIFICACAO.SH
+                                </button>
+                                <button onClick={removeApiKey} className="text-[9px] text-zinc-500 hover:text-red-400 uppercase tracking-widest underline">Desconectar Token</button>
+                              </div>
+                            )
+                          ) : (
+                            <div className="flex flex-col gap-2 w-full max-w-xs mt-4 sm:mt-0">
+                              <input 
+                                type="password" 
+                                value={apiKey} 
+                                onChange={(e) => setApiKey(e.target.value)}
+                                placeholder="INSIRA SUA API KEY DO GEMINI..."
+                                className="bg-black border border-blue-800 text-blue-400 p-2 text-xs w-full focus:outline-none focus:border-blue-400"
+                              />
+                              <div className="flex justify-between items-center">
+                                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-600 hover:text-blue-400 uppercase underline">
+                                  Obter Token Gratuito
+                                </a>
+                                <button onClick={saveApiKey} className="text-xs bg-blue-900/50 hover:bg-blue-600 border border-blue-500 text-blue-300 font-bold py-1 px-3 uppercase">
+                                  Salvar
+                                </button>
+                              </div>
                             </div>
-                          )
-                        ) : (
-                          <div className="flex flex-col gap-2 w-full max-w-xs mt-4 sm:mt-0">
-                            <input 
-                              type="password" 
-                              value={apiKey} 
-                              onChange={(e) => setApiKey(e.target.value)}
-                              placeholder="INSIRA SUA API KEY DO GEMINI..."
-                              className="bg-black border border-blue-800 text-blue-400 p-2 text-xs w-full focus:outline-none focus:border-blue-400"
-                            />
-                            <div className="flex justify-between items-center">
-                              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-600 hover:text-blue-400 uppercase underline">
-                                Obter Token Gratuito
-                              </a>
-                              <button onClick={saveApiKey} className="text-xs bg-blue-900/50 hover:bg-blue-600 border border-blue-500 text-blue-300 font-bold py-1 px-3 uppercase">
-                                Salvar
-                              </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Área da Resposta (Scrollável) */}
+                      <div className="p-5 overflow-y-auto cyber-scrollbar flex-grow">
+                        {isAiLoading && (
+                          <div className="text-xs text-blue-400 font-mono flex flex-col gap-2">
+                            <div><span className="text-zinc-500">[SISTEMA]</span> Autenticando Token...</div>
+                            <div><span className="text-zinc-500">[SISTEMA]</span> Analisando vetores de vulnerabilidade...</div>
+                            <div className="animate-pulse flex items-center gap-2 mt-2">
+                              <div className="w-2 h-4 bg-blue-500 animate-bounce"></div> GERANDO RESPOSTA...
                             </div>
                           </div>
                         )}
+                        
+                        {aiError && (
+                          <div className="text-xs text-red-500 bg-red-950/30 p-3 border border-red-900 font-mono">
+                            [FALHA_CRÍTICA] {aiError}
+                          </div>
+                        )}
+                        
+                        {aiAnalysis && (
+                          <div className="text-zinc-300 text-sm leading-relaxed prose prose-invert max-w-none">
+                            <div className="text-[10px] text-blue-500 mb-4 tracking-widest border-b border-blue-900/50 pb-2">
+                              // SAIDA_IA_SUCESSO
+                            </div>
+                            {renderAiAnalysis(aiAnalysis)}
+                          </div>
+                        )}
                       </div>
-
-                      {isAiLoading && (
-                        <div className="text-xs text-blue-400 font-mono flex flex-col gap-2">
-                          <div><span className="text-zinc-500">[SISTEMA]</span> Autenticando Token...</div>
-                          <div><span className="text-zinc-500">[SISTEMA]</span> Analisando vetores de vulnerabilidade...</div>
-                          <div className="animate-pulse flex items-center gap-2 mt-2">
-                            <div className="w-2 h-4 bg-blue-500 animate-bounce"></div> GERANDO RESPOSTA...
-                          </div>
-                        </div>
-                      )}
-                      
-                      {aiError && (
-                        <div className="text-xs text-red-500 bg-red-950/30 p-3 border border-red-900 font-mono">
-                          [FALHA_CRÍTICA] {aiError}
-                        </div>
-                      )}
-                      
-                      {aiAnalysis && (
-                        <div className="text-zinc-300 text-sm leading-relaxed prose prose-invert max-w-none">
-                          <div className="text-[10px] text-blue-500 mb-4 tracking-widest border-b border-blue-900/50 pb-2">
-                            // SAIDA_IA_SUCESSO
-                          </div>
-                          {aiAnalysis.split('\n').map((paragraph, idx) => (
-                            <p key={idx} className="mb-3 font-sans opacity-90">{paragraph}</p>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   </div>
 

@@ -226,16 +226,19 @@ def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None),
         Descrição Técnica Original: {vuln.description}
         Ação Exigida (CISA): {vuln.cisa_required_action}
         
-        Sua tarefa é explicar isso de forma extremamente simples, didática e acessível (como se explicasse para um leigo), sem jargões confusos. Forneça:
+        Sua tarefa é explicar isso de forma extremamente simples, didática e acessível (como se explicasse para um leigo), sem jargões confusos. Responda em 3 tópicos obrigatórios, cada um com o título em negrito markdown (envolvido por **):
         
-        1. **Contexto do Produto:** O que é o sistema/produto afetado de forma simples?
-        2. **A Falha de Segurança:** Explique qual é a falha técnica fazendo analogias simples com o mundo real (ex: porta aberta, chave mestra roubada, etc), para fácil entendimento.
-        3. **Plano de Ação:** Traduza a ação da CISA em passos práticos e claros do que deve ser feito.
+        **O QUE É A VULNERABILIDADE**: explicar o que a falha faz de forma tecnicamente correta, mas voltada para alguém que é totalmente leigo em segurança da informação. Deve citar o tipo técnico da falha (execução remota de código, escalonamento de privilégio, bypass de autenticação, vazamento de dados, etc), traduzir esse termo em uma frase simples, usar uma analogia curta do mundo real, e explicar o que um atacante consegue fazer e por que isso é perigoso. Não usar jargão sem explicar.
+        
+        **COMO VERIFICAR SE VOCÊ ESTÁ VULNERÁVEL**: passo a passo prático com comandos reais e específicos ao produto/fabricante/SO identificado na vulnerabilidade (ex: winver/Get-ComputerInfo/Get-HotFix no Windows, menu "Ajuda > Sobre" para Adobe/Chrome/Office, java -version, openssl version, php -v, node -v para runtimes, dpkg -l/rpm -qa/apt list --installed no Linux), colocando os comandos em blocos de código markdown. Se não for possível identificar o produto/SO com certeza, avisar isso e dar o caminho mais provável.
+        
+        **PLANO DE AÇÃO**: traduzir a ação da CISA (ou mitigação técnica) em passos numerados e práticos.
         
         REGRAS IMPORTANTES: 
         - Responda em Português do Brasil (PT-BR).
         - NÃO adivinhe a profissão do leitor e não use tratamentos (NÃO chame de "analista", "júnior", "amigo", etc).
         - NÃO adicione saudações ou despedidas conversacionais (NÃO diga "olá", nem peça para conversar com você no final). Apenas entregue a explicação formatada.
+        - Use listas com "-" ou números sempre que houver múltiplos itens.
         """
         
         response = model.generate_content(prompt)
