@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 // Tipagens
 interface Vulnerability {
@@ -241,9 +241,20 @@ function App() {
     return elements;
   };
 
+  const aiRequestController = useRef<AbortController | null>(null);
+
   const handleAskAI = (cve_id: string) => {
     if (!isKeySaved) return;
     
+    // Cancela a requisição anterior se houver
+    if (aiRequestController.current) {
+      aiRequestController.current.abort();
+    }
+    
+    // Cria um novo controller para esta requisição
+    aiRequestController.current = new AbortController();
+    const signal = aiRequestController.current.signal;
+
     setIsAiLoading(true);
     setAiError(null);
     setAiAnalysis(null);
@@ -254,7 +265,8 @@ function App() {
       method: 'POST',
       headers: {
         'X-Gemini-Key': apiKey.trim()
-      }
+      },
+      signal
     })
       .then(async (res) => {
         if (!res.ok) {
@@ -264,20 +276,35 @@ function App() {
         return res.json();
       })
       .then(data => {
-        setAiAnalysis(data.ai_analysis);
+        if (!signal.aborted) {
+          setAiAnalysis(data.ai_analysis);
+        }
       })
       .catch(err => {
-        setAiError(err.message);
+        if (err.name === 'AbortError') {
+          console.log('Requisição IA cancelada.');
+          return;
+        }
+        if (!signal.aborted) {
+          setAiError(err.message);
+        }
       })
       .finally(() => {
-        setIsAiLoading(false);
+        if (!signal.aborted) {
+          setIsAiLoading(false);
+        }
       });
   };
 
   const closeModal = () => {
+    if (aiRequestController.current) {
+      aiRequestController.current.abort();
+      aiRequestController.current = null;
+    }
     setSelectedVuln(null);
     setAiAnalysis(null);
     setAiError(null);
+    setIsAiLoading(false);
   };
 
   return (
