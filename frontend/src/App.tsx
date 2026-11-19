@@ -1,4 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
+import FilterBar from './components/FilterBar';
+import Pagination from './components/Pagination';
+import type { Facets, Filters } from './filters';
+import { DEFAULT_FILTERS, fromUrlParams, hasActiveFilters, toApiParams, toUrlParams } from './filters';
 
 // Tipagens
 interface Vulnerability {
@@ -22,6 +26,14 @@ interface Vulnerability {
   has_ai_analysis?: boolean;
 }
 
+interface SearchResponse {
+  items: Vulnerability[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
 interface AiSource {
   title: string;
   url: string;
@@ -36,12 +48,19 @@ interface ScoreComponent {
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const KEY_STORAGE = 'cyberpulse_gemini_key';
 
+// 0.99996 -> ">99,9%", 0.0123 -> "1,2%"
+function formatPercent(p: number): string {
+  if (p >= 0.9995) return '>99,9%';
+  if (p > 0 && p < 0.0005) return '<0,1%';
+  return `${(p * 100).toFixed(1).replace('.', ',')}%`;
+}
+
 const SCORE_LABELS: Record<string, string> = {
   cvss: 'SEVERIDADE (CVSS)',
-  epss: 'PROB. EXPLORAÇÃO (EPSS)',
-  kev: 'EXPLORADA ATIVAMENTE (CISA)',
+  epss: 'CHANCE DE ATAQUE (EPSS)',
+  kev: 'EXPLORAÇÃO CONFIRMADA (CISA)',
   ransomware: 'USADA POR RANSOMWARE',
-  urgency: 'URGÊNCIA / RECÊNCIA',
+  urgency: 'URGÊNCIA (PRAZO / NOVIDADE)',
 };
 
 // Lê a mensagem de erro da API mesmo quando a resposta não é JSON (ex: 502 do proxy do Render).
@@ -75,9 +94,14 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Search State
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<'score' | 'recent'>('score');
+  // Filtros, busca e paginação (sincronizados com a URL)
+  const [filters, setFilters] = useState<Filters>(() => fromUrlParams(window.location.search));
+  const [searchInput, setSearchInput] = useState(filters.q);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [facets, setFacets] = useState<Facets | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const listController = useRef<AbortController | null>(null);
 
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
 
@@ -93,33 +117,62 @@ function App() {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  const fetchData = (q: string = '', sortMode: string = sortBy) => {
-    setLoading(true);
-    setError(null);
-    const params = new URLSearchParams({ lang: 'pt-br', sort: sortMode, limit: '100' });
-    const query = q.trim().slice(0, 100);
-    if (query) params.set('q', query);
+  // Backend antigo (sem /search): usa a lista simples para não quebrar durante o deploy.
+  const loadLegacy = async (f: Filters, signal: AbortSignal): Promise<SearchResponse> => {
+    const params = new URLSearchParams({ lang: 'pt-br', sort: f.sort === 'recent' ? 'recent' : 'score', limit: '100' });
+    if (f.q.trim()) params.set('q', f.q.trim().slice(0, 100));
+    const res = await fetch(`${API_BASE_URL}/api/v1/vulnerabilities?${params}`, { signal });
+    if (!res.ok) throw new Error(await readError(res));
+    const items: Vulnerability[] = await res.json();
+    return { items, total: items.length, page: 1, page_size: items.length || 1, pages: 1 };
+  };
 
-    fetch(`${API_BASE_URL}/api/v1/vulnerabilities?${params}`)
+  const loadPage = (f: Filters) => {
+    listController.current?.abort();
+    const ctrl = new AbortController();
+    listController.current = ctrl;
+    setRefreshing(true);
+    setError(null);
+
+    fetch(`${API_BASE_URL}/api/v1/vulnerabilities/search?${toApiParams(f)}`, { signal: ctrl.signal })
       .then(async res => {
+        if (res.status === 404) return loadLegacy(f, ctrl.signal);
         if (!res.ok) throw new Error(await readError(res));
-        return res.json();
+        return res.json() as Promise<SearchResponse>;
       })
-      .then((vulnsData: Vulnerability[]) => {
-        setVulns(Array.isArray(vulnsData) ? vulnsData : []);
-        setLoading(false);
+      .then(data => {
+        setVulns(Array.isArray(data.items) ? data.items : []);
+        setTotal(data.total);
+        setPages(data.pages);
+        // Página além do fim (ex: um filtro reduziu os resultados): volta para a última.
+        if (data.total > 0 && f.page > data.pages) setFilters(prev => ({ ...prev, page: data.pages }));
       })
       .catch(err => {
+        if (err?.name === 'AbortError') return;
         console.error("Erro ao buscar a API:", err);
         setError(err instanceof Error && err.message !== 'Failed to fetch'
           ? err.message
           : "FALHA DE COMUNICAÇÃO COM O SERVIDOR. ELE PODE ESTAR INICIANDO (ATÉ 1 MIN) — TENTE NOVAMENTE.");
-        setLoading(false);
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       });
   };
 
   useEffect(() => {
-    fetchData(searchQuery);
+    loadPage(filters);
+    const qs = toUrlParams(filters).toString();
+    window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname);
+  }, [filters]);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/v1/vulnerabilities/facets`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => data && setFacets(data))
+      .catch(() => {});
 
     const stored = readStoredKey();
     if (stored.key) {
@@ -137,14 +190,24 @@ function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    fetchData(searchQuery, sortBy);
+  // Qualquer mudança de filtro volta para a página 1 (exceto mudar a própria página).
+  const updateFilters = (patch: Partial<Filters>) => {
+    setFilters(prev => ({ ...prev, ...patch, page: patch.page ?? 1 }));
   };
 
-  const handleSortChange = (newSort: 'score' | 'recent') => {
-    setSortBy(newSort);
-    fetchData(searchQuery, newSort);
+  const resetFilters = () => {
+    setSearchInput('');
+    setFilters(prev => ({ ...DEFAULT_FILTERS, sort: prev.sort, pageSize: prev.pageSize }));
+  };
+
+  const goToPage = (page: number) => {
+    updateFilters({ page });
+    document.getElementById('ameacas')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateFilters({ q: searchInput.trim() });
   };
 
   const saveApiKey = () => {
@@ -179,7 +242,7 @@ function App() {
   };
 
   const getSeverityBadge = (severity: string | null) => {
-    if (!severity) return <span className="text-zinc-500 animate-pulse">[ ANALISANDO... ]</span>;
+    if (!severity) return <span className="text-zinc-500" title="O NVD ainda não publicou a nota CVSS desta falha">[ AGUARDANDO NOTA ]</span>;
     const s = severity.toUpperCase();
     if (s === 'CRITICAL' || s === 'CRÍTICO') return <span className="text-red-500 font-bold border border-red-500/50 bg-red-950/30 px-2 py-0.5 shadow-[0_0_8px_rgba(239,68,68,0.3)]">[ CRÍTICO ]</span>;
     if (s === 'HIGH' || s === 'ALTO') return <span className="text-orange-500 font-bold border border-orange-500/50 bg-orange-950/30 px-2 py-0.5 shadow-[0_0_8px_rgba(249,115,22,0.3)]">[ ALTO ]</span>;
@@ -445,7 +508,7 @@ function App() {
                   <span className="font-bold text-2xl tracking-widest text-emerald-400 uppercase drop-shadow-[0_0_8px_rgba(16,185,129,0.8)]">
                     CyberPulse
                   </span>
-                  <span className="text-[10px] text-emerald-600 tracking-[0.2em] uppercase">Terminal de Inteligência de Ameaças v1.0</span>
+                  <span className="hidden sm:block text-[10px] text-emerald-600 tracking-[0.2em] uppercase">Terminal de Inteligência de Ameaças v1.0</span>
                 </div>
               </div>
             </div>
@@ -458,9 +521,14 @@ function App() {
               <div className="w-16 h-16 border-4 border-emerald-900 border-t-emerald-400 rounded-full animate-spin shadow-[0_0_15px_rgba(16,185,129,0.5)]"></div>
               <div className="text-emerald-400 text-sm tracking-[0.3em] uppercase animate-pulse">ESTABELECENDO CONEXÃO SEGURA...</div>
             </div>
-          ) : error ? (
+          ) : error && vulns.length === 0 ? (
             <div className="p-8 border border-red-500/50 bg-red-950/20 text-center text-red-500 font-bold uppercase tracking-widest shadow-[0_0_20px_rgba(239,68,68,0.3)]">
               [ ERRO: {error} ]
+              <div className="mt-4">
+                <button onClick={() => loadPage(filters)} className="text-xs border border-red-500 px-4 py-2 hover:bg-red-500 hover:text-black transition-colors">
+                  [ TENTAR NOVAMENTE ]
+                </button>
+              </div>
             </div>
           ) : (
             <div className="space-y-12">
@@ -468,70 +536,68 @@ function App() {
 
 
               {/* Tabela de Vulnerabilidades e Busca */}
-              <section>
+              <section id="ameacas" className="scroll-mt-20">
                 <div className="mb-6 flex flex-col sm:flex-row justify-between items-end gap-4">
                   <div className="flex items-center gap-3 w-full sm:w-auto">
                     <div className="h-0.5 w-12 bg-emerald-900/50"></div>
                     <h2 className="text-xl font-bold text-red-500 uppercase tracking-[0.2em] drop-shadow-[0_0_8px_rgba(239,68,68,0.5)] whitespace-nowrap">AMEAÇAS ATIVAS</h2>
-                    <div className="flex gap-2 ml-2">
-                      <button
-                        onClick={() => handleSortChange('score')}
-                        className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'score' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
-                      >
-                        CRITICIDADE
-                      </button>
-                      <button
-                        onClick={() => handleSortChange('recent')}
-                        className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'recent' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
-                      >
-                        CISA_RECENTES
-                      </button>
-                    </div>
                     <div className="h-0.5 flex-grow bg-emerald-900/50 hidden lg:block"></div>
                   </div>
 
                   {/* Busca Hacker */}
                   <form onSubmit={handleSearch} className="flex w-full sm:w-auto">
-                    <div className="flex items-center border border-emerald-800 bg-black px-3 py-1">
+                    <div className="flex items-center w-full border border-emerald-800 bg-black px-3 py-1">
                       <span className="text-emerald-600 mr-2">&gt;_</span>
                       <input
                         type="text"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
+                        value={searchInput}
+                        maxLength={100}
+                        aria-label="Pesquisar CVE ou sistema"
+                        onChange={(e) => setSearchInput(e.target.value)}
                         placeholder="PESQUISAR_CVE_OU_SISTEMA..."
-                        className="bg-transparent border-none text-emerald-400 focus:outline-none uppercase text-xs tracking-widest placeholder-emerald-900/70 w-full sm:w-64"
+                        className="bg-transparent border-none text-emerald-400 focus:outline-none uppercase text-xs tracking-widest placeholder-emerald-900/70 flex-1 min-w-0 sm:w-64"
                       />
-                      <button type="submit" className="text-emerald-500 font-bold ml-2 hover:text-white transition-colors text-xs uppercase tracking-widest">
+                      <button type="submit" className="text-emerald-500 font-bold ml-2 hover:text-white transition-colors text-xs uppercase tracking-widest whitespace-nowrap">
                         [ BUSCAR ]
                       </button>
                     </div>
                   </form>
                 </div>
 
-                <div className="mb-3 text-[10px] tracking-widest text-emerald-600/70 uppercase text-right">
-                  {searchQuery
-                    ? `[ BUSCA CONCLUÍDA: ENCONTRADAS ${vulns.length} AMEAÇAS PARA "${searchQuery}" ]`
-                    : sortBy === 'score'
-                      ? `[ SISTEMA EXIBINDO AS ${vulns.length} VULNERABILIDADES MAIS CRÍTICAS... ]`
-                      : `[ SISTEMA EXIBINDO AS ${vulns.length} VULNERABILIDADES MAIS RECENTES... ]`}
+                <FilterBar filters={filters} facets={facets} onChange={updateFilters} onReset={resetFilters} />
+
+                <div className="mb-3 text-[10px] tracking-widest text-emerald-600/70 uppercase text-right" aria-live="polite">
+                  {refreshing
+                    ? '[ CONSULTANDO BASE DE AMEAÇAS... ]'
+                    : filters.q
+                      ? `[ ${total} RESULTADOS PARA "${filters.q}" ]`
+                      : hasActiveFilters(filters)
+                        ? `[ ${total} AMEAÇAS COM ESSES FILTROS ]`
+                        : `[ ${total} AMEAÇAS MONITORADAS ]`}
+                  {error && <span className="text-red-500 ml-2">[ ERRO: {error} ]</span>}
                 </div>
 
-                <div className="bg-black/50 border border-emerald-900/50 shadow-[0_0_30px_rgba(0,0,0,0.8)] overflow-hidden relative">
+                <div className={`bg-black/50 border border-emerald-900/50 shadow-[0_0_30px_rgba(0,0,0,0.8)] overflow-hidden relative transition-opacity ${refreshing ? 'opacity-50' : ''}`}>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-emerald-900/30">
                       <thead className="bg-emerald-950/20">
                         <tr>
-                          <th className="py-4 pl-4 pr-3 text-left text-[11px] uppercase tracking-widest text-emerald-600 sm:pl-6">RISK SCORE (CYBERPULSE)</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">ID DA AMEAÇA</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">DESCRIÇÃO (ALVO)</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">NÍVEL CVSS</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">AÇÃO</th>
+                          <th className="py-4 pl-4 pr-3 text-left text-[11px] uppercase tracking-widest text-emerald-600 sm:pl-6">NOTA DE RISCO</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">CVE</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">VULNERABILIDADE</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">SEVERIDADE (CVSS)</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600"><span className="sr-only">Ações</span></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-emerald-900/20 bg-transparent">
                         {vulns.length === 0 ? (
                           <tr>
-                            <td colSpan={5} className="py-12 text-center text-emerald-600 uppercase tracking-widest">NENHUM REGISTRO ENCONTRADO</td>
+                            <td colSpan={5} className="py-12 text-center text-emerald-600 uppercase tracking-widest">
+                              NENHUM REGISTRO ENCONTRADO
+                              {hasActiveFilters(filters) && (
+                                <button onClick={resetFilters} className="block mx-auto mt-3 text-[10px] underline text-zinc-500 hover:text-emerald-400">LIMPAR FILTROS</button>
+                              )}
+                            </td>
                           </tr>
                         ) : (
                           vulns.map((vuln) => (
@@ -548,12 +614,11 @@ function App() {
                               </td>
                               <td className="py-4 px-3 text-sm">
                                 <div className="font-medium text-zinc-300 max-w-sm truncate uppercase group-hover:text-white" title={vuln.title}>{vuln.title}</div>
-                                <div className="text-[10px] text-zinc-500 mt-1 tracking-widest flex items-center gap-2">
-                                  <span>ALVO: {vuln.vendor} {vuln.product}</span>
-                                  <span className="text-zinc-700">|</span>
-                                  <span className="text-emerald-600">CISA: {vuln.cisa_date_added ? formatDate(vuln.cisa_date_added) : 'N/A'}</span>
-                                  {vuln.ransomware_use && <span className="text-red-500 font-bold">RANSOMWARE</span>}
-                                  {vuln.epss_score != null && <span className="text-zinc-400">EPSS {(vuln.epss_score * 100).toFixed(1)}%</span>}
+                                <div className="text-[10px] text-zinc-500 mt-1 tracking-widest flex flex-wrap items-center gap-x-3 gap-y-0.5 [&>span]:whitespace-nowrap">
+                                  <span>{vuln.vendor} {vuln.product}</span>
+                                  <span className="text-emerald-600" title="Data em que a CISA confirmou a exploração ativa">NA CISA DESDE {vuln.cisa_date_added ? formatDate(vuln.cisa_date_added) : 'N/D'}</span>
+                                  {vuln.ransomware_use && <span className="text-red-500 font-bold">USADA POR RANSOMWARE</span>}
+                                  {vuln.epss_score != null && <span className="text-zinc-400" title="EPSS (FIRST.org): probabilidade de exploração nos próximos 30 dias">CHANCE DE ATAQUE {formatPercent(vuln.epss_score)}</span>}
                                 </div>
                               </td>
                               <td className="whitespace-nowrap py-4 px-3 text-xs">
@@ -571,6 +636,16 @@ function App() {
                     </table>
                   </div>
                 </div>
+
+                <Pagination
+                  page={filters.page}
+                  pages={pages}
+                  pageSize={filters.pageSize}
+                  total={total}
+                  disabled={refreshing}
+                  onPage={goToPage}
+                  onPageSize={pageSize => updateFilters({ pageSize })}
+                />
               </section>
 
             </div>
@@ -611,7 +686,7 @@ function App() {
                     <span><strong className="text-emerald-600">PRODUTO:</strong> {selectedVuln.product || 'DESCONHECIDO'}</span>
                     <span><strong className="text-emerald-600">CVSS:</strong> {selectedVuln.cvss_score || 'PENDENTE'}</span>
                     {selectedVuln.epss_score != null && (
-                      <span><strong className="text-emerald-600">EPSS:</strong> {(selectedVuln.epss_score * 100).toFixed(1)}% (PERCENTIL {Math.round((selectedVuln.epss_percentile ?? 0) * 100)})</span>
+                      <span><strong className="text-emerald-600">EPSS:</strong> {formatPercent(selectedVuln.epss_score)} (PERCENTIL {Math.round((selectedVuln.epss_percentile ?? 0) * 100)})</span>
                     )}
                     {selectedVuln.ransomware_use && <span className="text-red-500 font-bold">USADA EM CAMPANHAS DE RANSOMWARE</span>}
                   </div>
