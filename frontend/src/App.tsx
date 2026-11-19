@@ -14,56 +14,128 @@ interface Vulnerability {
   cisa_required_action: string | null;
   cisa_due_date: string | null;
   custom_risk_score: number | null;
+  cvss_vector?: string | null;
+  known_exploited?: boolean;
+  ransomware_use?: boolean | null;
+  epss_score?: number | null;
+  epss_percentile?: number | null;
+  has_ai_analysis?: boolean;
+}
+
+interface AiSource {
+  title: string;
+  url: string;
+}
+
+interface ScoreComponent {
+  value: number;
+  weight: number;
+  points: number;
+}
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const KEY_STORAGE = 'cyberpulse_gemini_key';
+
+const SCORE_LABELS: Record<string, string> = {
+  cvss: 'SEVERIDADE (CVSS)',
+  epss: 'PROB. EXPLORAÇÃO (EPSS)',
+  kev: 'EXPLORADA ATIVAMENTE (CISA)',
+  ransomware: 'USADA POR RANSOMWARE',
+  urgency: 'URGÊNCIA / RECÊNCIA',
+};
+
+// Lê a mensagem de erro da API mesmo quando a resposta não é JSON (ex: 502 do proxy do Render).
+async function readError(res: Response): Promise<string> {
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === 'string') return body.detail;
+    if (Array.isArray(body?.detail)) return 'REQUISIÇÃO INVÁLIDA';
+  } catch {
+    /* corpo não é JSON */
+  }
+  if (res.status === 429) return 'MUITAS REQUISIÇÕES. AGUARDE UM MINUTO.';
+  if (res.status >= 500) return `SERVIDOR INDISPONÍVEL (HTTP ${res.status}). TENTE NOVAMENTE EM INSTANTES.`;
+  return `FALHA NA REQUISIÇÃO (HTTP ${res.status})`;
+}
+
+function readStoredKey(): { key: string; remember: boolean } {
+  try {
+    const session = sessionStorage.getItem(KEY_STORAGE);
+    if (session) return { key: session, remember: false };
+    const local = localStorage.getItem(KEY_STORAGE);
+    if (local) return { key: local, remember: true };
+  } catch {
+    /* storage bloqueado */
+  }
+  return { key: '', remember: false };
 }
 
 function App() {
   const [vulns, setVulns] = useState<Vulnerability[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   // Search State
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'score' | 'recent'>('score');
 
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
-  
+
   // API Key State
   const [apiKey, setApiKey] = useState('');
   const [isKeySaved, setIsKeySaved] = useState(false);
+  const [rememberKey, setRememberKey] = useState(false);
 
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  const [aiSources, setAiSources] = useState<AiSource[]>([]);
+  const [aiMeta, setAiMeta] = useState<{ cached: boolean; generatedAt: string | null } | null>(null);
+  const [scoreBreakdown, setScoreBreakdown] = useState<Record<string, ScoreComponent> | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
   const fetchData = (q: string = '', sortMode: string = sortBy) => {
     setLoading(true);
-    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-    let vulnsUrl = `${API_BASE_URL}/api/v1/vulnerabilities?lang=pt-br&sort=${sortMode}`;
-    if (q) vulnsUrl += `&q=${encodeURIComponent(q)}`;
-    
-    fetch(vulnsUrl)
-      .then(res => res.json())
-      .then(vulnsData => {
-        setVulns(vulnsData);
+    setError(null);
+    const params = new URLSearchParams({ lang: 'pt-br', sort: sortMode, limit: '100' });
+    const query = q.trim().slice(0, 100);
+    if (query) params.set('q', query);
+
+    fetch(`${API_BASE_URL}/api/v1/vulnerabilities?${params}`)
+      .then(async res => {
+        if (!res.ok) throw new Error(await readError(res));
+        return res.json();
+      })
+      .then((vulnsData: Vulnerability[]) => {
+        setVulns(Array.isArray(vulnsData) ? vulnsData : []);
         setLoading(false);
       })
       .catch(err => {
         console.error("Erro ao buscar a API:", err);
-        setError("FALHA CRÍTICA DE COMUNICAÇÃO COM O SERVIDOR PRINCIPAL.");
+        setError(err instanceof Error && err.message !== 'Failed to fetch'
+          ? err.message
+          : "FALHA DE COMUNICAÇÃO COM O SERVIDOR. ELE PODE ESTAR INICIANDO (ATÉ 1 MIN) — TENTE NOVAMENTE.");
         setLoading(false);
       });
   };
 
   useEffect(() => {
     fetchData(searchQuery);
-    
-    // Recupera a chave do LocalStorage se existir
-    const savedKey = localStorage.getItem('cyberpulse_gemini_key');
-    if (savedKey) {
-      setApiKey(savedKey);
+
+    const stored = readStoredKey();
+    if (stored.key) {
+      setApiKey(stored.key);
+      setRememberKey(stored.remember);
       setIsKeySaved(true);
     }
-  }, []); 
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeModal();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,17 +148,33 @@ function App() {
   };
 
   const saveApiKey = () => {
-    if (apiKey.trim().length > 10) {
-      localStorage.setItem('cyberpulse_gemini_key', apiKey.trim());
-      setIsKeySaved(true);
+    const key = apiKey.trim();
+    if (key.length <= 10) {
+      setAiError('CHAVE MUITO CURTA. COLE A CHAVE COMPLETA DO GOOGLE AI STUDIO.');
+      return;
     }
+    try {
+      // Por padrão a chave vive só nesta aba (sessionStorage). "Lembrar" grava no localStorage.
+      sessionStorage.removeItem(KEY_STORAGE);
+      localStorage.removeItem(KEY_STORAGE);
+      (rememberKey ? localStorage : sessionStorage).setItem(KEY_STORAGE, key);
+    } catch {
+      /* sem storage: a chave fica só em memória */
+    }
+    setApiKey(key);
+    setAiError(null);
+    setIsKeySaved(true);
   };
 
   const removeApiKey = () => {
-    localStorage.removeItem('cyberpulse_gemini_key');
+    try {
+      sessionStorage.removeItem(KEY_STORAGE);
+      localStorage.removeItem(KEY_STORAGE);
+    } catch {
+      /* ignore */
+    }
     setApiKey('');
     setIsKeySaved(false);
-    setAiAnalysis(null);
     setAiError(null);
   };
 
@@ -110,12 +198,6 @@ function App() {
   const formatDate = (dateString: string | null) => {
     if (!dateString) return '00/00/0000';
     return new Date(dateString).toLocaleDateString('pt-BR');
-  };
-
-  const stripHtml = (html: string) => {
-    const tmp = document.createElement("DIV");
-    tmp.innerHTML = html;
-    return tmp.textContent || tmp.innerText || "";
   };
 
   const renderAiAnalysis = (text: string) => {
@@ -177,7 +259,7 @@ function App() {
         );
         return;
       }
-      
+
       const inlineHeadingMatch = trimmedLine.match(/^(?:#+\s*)?\*\*(.+?)\*\*:?\s*(.*)$/);
       if (inlineHeadingMatch && !trimmedLine.match(/^[-*1-9]/)) {
          if (!inlineHeadingMatch[2]) {
@@ -243,14 +325,42 @@ function App() {
 
   const aiRequestController = useRef<AbortController | null>(null);
 
-  const handleAskAI = (cve_id: string) => {
+  const openVuln = (vuln: Vulnerability) => {
+    setSelectedVuln(vuln);
+    setAiAnalysis(null);
+    setAiSources([]);
+    setAiMeta(null);
+    setAiError(null);
+    setScoreBreakdown(null);
+
+    const cve = encodeURIComponent(vuln.cve_id);
+    fetch(`${API_BASE_URL}/api/v1/vulnerabilities/${cve}/score`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => data && setScoreBreakdown(data.components))
+      .catch(() => {});
+
+    if (vuln.has_ai_analysis) {
+      fetch(`${API_BASE_URL}/api/v1/vulnerabilities/${cve}/analysis`)
+        .then(res => (res.ok ? res.json() : null))
+        .then(data => {
+          if (data?.ai_analysis) {
+            setAiAnalysis(data.ai_analysis);
+            setAiSources(Array.isArray(data.sources) ? data.sources : []);
+            setAiMeta({ cached: true, generatedAt: data.generated_at });
+          }
+        })
+        .catch(() => {});
+    }
+  };
+
+  const handleAskAI = (cve_id: string, force = false) => {
     if (!isKeySaved) return;
-    
+
     // Cancela a requisição anterior se houver
     if (aiRequestController.current) {
       aiRequestController.current.abort();
     }
-    
+
     // Cria um novo controller para esta requisição
     aiRequestController.current = new AbortController();
     const signal = aiRequestController.current.signal;
@@ -258,10 +368,11 @@ function App() {
     setIsAiLoading(true);
     setAiError(null);
     setAiAnalysis(null);
-    
-    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-    
-    fetch(`${API_BASE_URL}/api/v1/vulnerabilities/${cve_id}/analyze`, { 
+    setAiSources([]);
+    setAiMeta(null);
+
+    const url = `${API_BASE_URL}/api/v1/vulnerabilities/${encodeURIComponent(cve_id)}/analyze${force ? '?force=true' : ''}`;
+    fetch(url, {
       method: 'POST',
       headers: {
         'X-Gemini-Key': apiKey.trim()
@@ -270,14 +381,17 @@ function App() {
     })
       .then(async (res) => {
         if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || 'CONEXÃO RECUSADA');
+          if (res.status === 401) setIsKeySaved(false);
+          throw new Error(await readError(res));
         }
         return res.json();
       })
       .then(data => {
         if (!signal.aborted) {
           setAiAnalysis(data.ai_analysis);
+          setAiSources(Array.isArray(data.sources) ? data.sources : []);
+          setAiMeta({ cached: Boolean(data.cached), generatedAt: data.generated_at });
+          setVulns(prev => prev.map(v => (v.cve_id === cve_id ? { ...v, has_ai_analysis: true } : v)));
         }
       })
       .catch(err => {
@@ -286,7 +400,9 @@ function App() {
           return;
         }
         if (!signal.aborted) {
-          setAiError(err.message);
+          setAiError(err.message === 'Failed to fetch'
+            ? 'SEM RESPOSTA DO SERVIDOR. ELE PODE ESTAR INICIANDO — TENTE NOVAMENTE EM 1 MINUTO.'
+            : err.message);
         }
       })
       .finally(() => {
@@ -303,6 +419,9 @@ function App() {
     }
     setSelectedVuln(null);
     setAiAnalysis(null);
+    setAiSources([]);
+    setAiMeta(null);
+    setScoreBreakdown(null);
     setAiError(null);
     setIsAiLoading(false);
   };
@@ -311,9 +430,9 @@ function App() {
     <>
       <div className="crt-overlay"></div>
       <div className="scanline"></div>
-      
+
       <div className="min-h-screen bg-zinc-950 font-['Fira_Code',monospace] text-emerald-500 pb-12 relative overflow-hidden">
-        
+
         {/* Header Terminal */}
         <header className="border-b border-emerald-900/50 bg-black/80 backdrop-blur-sm sticky top-0 z-10 shadow-[0_4px_30px_rgba(0,0,0,0.5)]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -345,7 +464,7 @@ function App() {
             </div>
           ) : (
             <div className="space-y-12">
-              
+
 
 
               {/* Tabela de Vulnerabilidades e Busca */}
@@ -355,14 +474,14 @@ function App() {
                     <div className="h-0.5 w-12 bg-emerald-900/50"></div>
                     <h2 className="text-xl font-bold text-red-500 uppercase tracking-[0.2em] drop-shadow-[0_0_8px_rgba(239,68,68,0.5)] whitespace-nowrap">AMEAÇAS ATIVAS</h2>
                     <div className="flex gap-2 ml-2">
-                      <button 
-                        onClick={() => handleSortChange('score')} 
+                      <button
+                        onClick={() => handleSortChange('score')}
                         className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'score' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
                       >
                         CRITICIDADE
                       </button>
-                      <button 
-                        onClick={() => handleSortChange('recent')} 
+                      <button
+                        onClick={() => handleSortChange('recent')}
                         className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'recent' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
                       >
                         CISA_RECENTES
@@ -370,13 +489,13 @@ function App() {
                     </div>
                     <div className="h-0.5 flex-grow bg-emerald-900/50 hidden lg:block"></div>
                   </div>
-                  
+
                   {/* Busca Hacker */}
                   <form onSubmit={handleSearch} className="flex w-full sm:w-auto">
                     <div className="flex items-center border border-emerald-800 bg-black px-3 py-1">
                       <span className="text-emerald-600 mr-2">&gt;_</span>
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="PESQUISAR_CVE_OU_SISTEMA..."
@@ -390,11 +509,13 @@ function App() {
                 </div>
 
                 <div className="mb-3 text-[10px] tracking-widest text-emerald-600/70 uppercase text-right">
-                  {searchQuery 
-                    ? `[ BUSCA CONCLUÍDA: ENCONTRADAS ${vulns.length} AMEAÇAS PARA "${searchQuery}" ]` 
-                    : `[ SISTEMA EXIBINDO AS ${vulns.length} VULNERABILIDADES MAIS RECENTES... ]`}
+                  {searchQuery
+                    ? `[ BUSCA CONCLUÍDA: ENCONTRADAS ${vulns.length} AMEAÇAS PARA "${searchQuery}" ]`
+                    : sortBy === 'score'
+                      ? `[ SISTEMA EXIBINDO AS ${vulns.length} VULNERABILIDADES MAIS CRÍTICAS... ]`
+                      : `[ SISTEMA EXIBINDO AS ${vulns.length} VULNERABILIDADES MAIS RECENTES... ]`}
                 </div>
-                
+
                 <div className="bg-black/50 border border-emerald-900/50 shadow-[0_0_30px_rgba(0,0,0,0.8)] overflow-hidden relative">
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-emerald-900/30">
@@ -414,10 +535,10 @@ function App() {
                           </tr>
                         ) : (
                           vulns.map((vuln) => (
-                            <tr 
-                              key={vuln.id} 
+                            <tr
+                              key={vuln.id}
                               className="hover:bg-emerald-900/20 transition-all cursor-pointer group"
-                              onClick={() => setSelectedVuln(vuln)}
+                              onClick={() => openVuln(vuln)}
                             >
                               <td className="whitespace-nowrap py-4 pl-4 pr-3 sm:pl-6 text-sm">
                                 {getCustomScoreBadge(vuln.custom_risk_score)}
@@ -431,6 +552,8 @@ function App() {
                                   <span>ALVO: {vuln.vendor} {vuln.product}</span>
                                   <span className="text-zinc-700">|</span>
                                   <span className="text-emerald-600">CISA: {vuln.cisa_date_added ? formatDate(vuln.cisa_date_added) : 'N/A'}</span>
+                                  {vuln.ransomware_use && <span className="text-red-500 font-bold">RANSOMWARE</span>}
+                                  {vuln.epss_score != null && <span className="text-zinc-400">EPSS {(vuln.epss_score * 100).toFixed(1)}%</span>}
                                 </div>
                               </td>
                               <td className="whitespace-nowrap py-4 px-3 text-xs">
@@ -458,14 +581,14 @@ function App() {
         {selectedVuln && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm transition-opacity">
             <div className="bg-zinc-950 border border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.2)] w-full max-w-[95vw] max-h-[95vh] overflow-hidden flex flex-col relative animate-in fade-in zoom-in-95 duration-200">
-              
+
               {/* Top Bar Terminal */}
               <div className="bg-emerald-950/50 border-b border-emerald-900/50 p-2 flex justify-between items-center">
                 <div className="flex gap-2 items-center px-2">
                   <span className="text-red-500 font-bold text-xs uppercase animate-pulse">● FEED_AO_VIVO</span>
                   <span className="text-emerald-600 text-xs font-medium">| root@cyberpulse:~# cat threat_intel.log</span>
                 </div>
-                <button 
+                <button
                   onClick={closeModal}
                   className="text-emerald-500 hover:text-white hover:bg-red-500 px-3 py-1 text-xs font-bold transition-colors uppercase border border-transparent hover:border-red-400"
                 >
@@ -474,7 +597,7 @@ function App() {
               </div>
 
               <div className="overflow-y-auto p-6 sm:p-8 flex-grow cyber-scrollbar">
-                
+
                 <div className="mb-8 pb-6 border-b border-emerald-900/30">
                   <div className="flex items-center gap-4 mb-3">
                     <span className="bg-emerald-500 text-black px-3 py-1 text-sm font-black tracking-widest uppercase shadow-[0_0_10px_rgba(16,185,129,0.4)]">
@@ -486,11 +609,26 @@ function App() {
                   <div className="mt-3 text-xs tracking-widest text-zinc-400 flex flex-wrap gap-x-6 gap-y-2">
                     <span><strong className="text-emerald-600">FABRICANTE:</strong> {selectedVuln.vendor || 'DESCONHECIDO'}</span>
                     <span><strong className="text-emerald-600">PRODUTO:</strong> {selectedVuln.product || 'DESCONHECIDO'}</span>
+                    <span><strong className="text-emerald-600">CVSS:</strong> {selectedVuln.cvss_score || 'PENDENTE'}</span>
+                    {selectedVuln.epss_score != null && (
+                      <span><strong className="text-emerald-600">EPSS:</strong> {(selectedVuln.epss_score * 100).toFixed(1)}% (PERCENTIL {Math.round((selectedVuln.epss_percentile ?? 0) * 100)})</span>
+                    )}
+                    {selectedVuln.ransomware_use && <span className="text-red-500 font-bold">USADA EM CAMPANHAS DE RANSOMWARE</span>}
                   </div>
+                  {scoreBreakdown && (
+                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-5 gap-2">
+                      {Object.entries(scoreBreakdown).map(([k, c]) => (
+                        <div key={k} className="border border-emerald-900/40 bg-black/40 px-3 py-2" title={`Peso ${Math.round(c.weight * 100)}%`}>
+                          <div className="text-[9px] text-emerald-700 tracking-widest">{SCORE_LABELS[k] ?? k.toUpperCase()}</div>
+                          <div className="text-sm text-emerald-400 font-bold">+{c.points.toFixed(1)} <span className="text-[9px] text-zinc-600">/ {(c.weight * 10).toFixed(1)}</span></div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-8">
-                  
+
                   {/* Top Row: Dados Brutos */}
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     <div className="border border-zinc-800 bg-zinc-900/50 p-4 flex flex-col">
@@ -520,9 +658,9 @@ function App() {
                     </div>
 
                     <div className="flex flex-col justify-end">
-                      <a 
-                        href={`https://www.cve.org/CVERecord?id=${selectedVuln.cve_id}`} 
-                        target="_blank" 
+                      <a
+                        href={`https://www.cve.org/CVERecord?id=${selectedVuln.cve_id}`}
+                        target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-2 border border-emerald-500/30 bg-emerald-950/10 px-4 py-3 text-xs font-bold text-emerald-500 uppercase tracking-widest hover:bg-emerald-900/40 hover:border-emerald-500 hover:text-emerald-400 transition-all w-full justify-center shadow-[0_0_10px_rgba(16,185,129,0.05)] hover:shadow-[0_0_15px_rgba(16,185,129,0.2)]"
                       >
@@ -535,7 +673,7 @@ function App() {
                   <div className="flex flex-col gap-6 w-full flex-grow mt-4">
                     <div className="border border-blue-500/30 bg-blue-950/10 flex flex-col relative overflow-hidden min-h-[50vh]">
                       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-indigo-600 z-10"></div>
-                      
+
                       {/* Cabeçalho Fixo */}
                       <div className="p-5 border-b border-blue-900/50 bg-blue-950/20 sticky top-0 z-10 flex-shrink-0">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -545,30 +683,34 @@ function App() {
                             </h3>
                             <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest">Executa roteiro de tradução com IA Gemini.</p>
                           </div>
-                          
+
                           {isKeySaved ? (
-                            !aiAnalysis && !isAiLoading && (
+                            !isAiLoading && (
                               <div className="flex flex-col items-end gap-2">
-                                <button 
-                                  onClick={() => handleAskAI(selectedVuln.cve_id)}
+                                <button
+                                  onClick={() => handleAskAI(selectedVuln.cve_id, Boolean(aiAnalysis))}
                                   className="bg-black border border-blue-500 text-blue-400 hover:bg-blue-500 hover:text-black hover:shadow-[0_0_15px_rgba(59,130,246,0.6)] font-bold py-2 px-4 transition-all text-xs uppercase tracking-widest flex-shrink-0"
                                 >
-                                  &gt;_ EXECUTAR_SIMPLIFICACAO.SH
+                                  {aiAnalysis ? '>_ GERAR_NOVAMENTE.SH' : (aiError ? '>_ TENTAR_NOVAMENTE.SH' : '>_ EXECUTAR_SIMPLIFICACAO.SH')}
                                 </button>
                                 <button onClick={removeApiKey} className="text-[9px] text-zinc-500 hover:text-red-400 uppercase tracking-widest underline">Desconectar Token</button>
                               </div>
                             )
                           ) : (
                             <div className="flex flex-col gap-2 w-full max-w-xs mt-4 sm:mt-0">
-                              <input 
-                                type="password" 
-                                value={apiKey} 
+                              <input
+                                type="password"
+                                value={apiKey}
                                 onChange={(e) => setApiKey(e.target.value)}
                                 placeholder="INSIRA SUA API KEY DO GEMINI..."
                                 className="bg-black border border-blue-800 text-blue-400 p-2 text-xs w-full focus:outline-none focus:border-blue-400"
                               />
+                              <label className="flex items-center gap-2 text-[9px] text-zinc-500 uppercase tracking-widest cursor-pointer">
+                                <input type="checkbox" checked={rememberKey} onChange={(e) => setRememberKey(e.target.checked)} className="accent-blue-500" />
+                                Lembrar neste navegador
+                              </label>
                               <div className="flex justify-between items-center">
-                                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-600 hover:text-blue-400 uppercase underline">
+                                <a href="https://aistudio.google.com/app/apikey"  target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-600 hover:text-blue-400 uppercase underline">
                                   Obter Token Gratuito
                                 </a>
                                 <button onClick={saveApiKey} className="text-xs bg-blue-900/50 hover:bg-blue-600 border border-blue-500 text-blue-300 font-bold py-1 px-3 uppercase">
@@ -592,19 +734,38 @@ function App() {
                             </div>
                           </div>
                         )}
-                        
+
                         {aiError && (
                           <div className="text-xs text-red-500 bg-red-950/30 p-3 border border-red-900 font-mono">
                             [FALHA_CRÍTICA] {aiError}
                           </div>
                         )}
-                        
+
                         {aiAnalysis && (
                           <div className="text-zinc-300 text-sm leading-relaxed prose prose-invert max-w-none">
                             <div className="text-[10px] text-blue-500 mb-4 tracking-widest border-b border-blue-900/50 pb-2">
                               // SAIDA_IA_SUCESSO
+                              {aiMeta?.generatedAt && (
+                                <span className="text-zinc-600 ml-2">
+                                  {aiMeta.cached ? '(ANÁLISE SALVA DE ' : '(GERADA EM '}
+                                  {new Date(aiMeta.generatedAt + (aiMeta.generatedAt.endsWith('Z') ? '' : 'Z')).toLocaleString('pt-BR')})
+                                </span>
+                              )}
                             </div>
                             {renderAiAnalysis(aiAnalysis)}
+                            {aiSources.length > 0 && (
+                              <div className="mt-6 border-t border-blue-900/50 pt-3">
+                                <h4 className="text-[10px] font-bold text-blue-500 uppercase tracking-widest mb-2">FONTES CONSULTADAS PELA IA</h4>
+                                <ul className="list-disc ml-6 text-xs">
+                                  {aiSources.filter(src => src.url.startsWith('https://')).map(src => (
+                                    <li key={src.url}>
+                                      <a href={src.url} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline hover:text-blue-300">{src.title}</a>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            <p className="mt-4 text-[10px] text-zinc-600 uppercase tracking-widest">Conteúdo gerado por IA: confirme KBs e versões na página oficial do fabricante antes de aplicar.</p>
                           </div>
                         )}
                       </div>
