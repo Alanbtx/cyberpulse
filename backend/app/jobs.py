@@ -1,13 +1,11 @@
 """Rotinas de coleta e processamento (rodam no APScheduler ou via rota admin/cron)."""
 import logging
 import threading
-import time
 from datetime import datetime, timedelta
 
 from deep_translator import GoogleTranslator
 from sqlalchemy import and_, or_
 
-from app import config
 from app.collectors.cisa_kev import fetch_and_save_cisa_kev
 from app.collectors.epss import fetch_and_save_epss
 from app.collectors.feeds import fetch_and_save_feeds
@@ -62,11 +60,8 @@ def run_nvd_enrichment_job(db, batch: int = 1):
         .limit(batch)
         .all()
     )
-    # Sem chave o NVD aceita 5 req/30s; com chave, 50 req/30s.
-    pause = 0.7 if config.NVD_API_KEY else 6.5
-    for i, v in enumerate(vulns):
-        if i:
-            time.sleep(pause)
+    # O ritmo (5 ou 50 req/30s) é controlado dentro do coletor do NVD.
+    for v in vulns:
         enrich_cve_with_nvd(db, v.cve_id)
     return {"status": "success", "processadas": len(vulns)}
 

@@ -27,7 +27,7 @@ ENABLE_DOCS = _bool("ENABLE_DOCS", False)
 ENABLE_SCHEDULER = _bool("ENABLE_SCHEDULER", True)
 
 # Chave opcional do NVD: sobe o limite de 5 para 50 requisições a cada 30s.
-NVD_API_KEY = os.getenv("NVD_API_KEY", "")
+NVD_API_KEY = os.getenv("NVD_API_KEY", "").strip().strip('"')
 
 # Modelos Gemini (configuráveis sem precisar de deploy de código).
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
