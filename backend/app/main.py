@@ -1,273 +1,238 @@
-import os
+import json
+import logging
+import threading
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Header
+from datetime import datetime, timedelta
+from typing import Literal
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from apscheduler.schedulers.background import BackgroundScheduler
-import logging
-from deep_translator import GoogleTranslator
-import google.generativeai as genai
 
-from app.database import engine, Base, SessionLocal, get_db
-from app.models import Vulnerability, Advisory
-from app.collectors.cisa_kev import fetch_and_save_cisa_kev
-from app.collectors.nvd import enrich_cve_with_nvd
-from app.collectors.feeds import fetch_and_save_feeds
-from app.scoring import calculate_custom_risk_score
+from app import ai, config
+from app.collectors.nvd import fetch_new_cve, is_valid_cve_id
+from app.database import get_db, run_migrations
+from app.jobs import (
+    JOBS,
+    run_full_refresh,
+    run_nvd_enrichment_job,
+    run_scoring_job,
+    run_translation_job,
+    run_feeds_job,
+    run_cisa_job,
+    run_epss_job,
+)
+from app.models import Advisory, Vulnerability
+from app.scoring import WEIGHTS, ScoreInput, score_components
+from app.security import SecurityHeadersMiddleware, ai_limiter, require_admin, search_limiter
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
-# Backend Inicializado
-Base.metadata.create_all(bind=engine)
 
-scheduler = BackgroundScheduler()
+scheduler = BackgroundScheduler(job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60})
+scheduler.add_job(run_nvd_enrichment_job, "interval", seconds=3 if config.NVD_API_KEY else 7, id="nvd_job")
+scheduler.add_job(run_translation_job, "interval", seconds=5, id="translate_job")
+scheduler.add_job(run_scoring_job, "interval", minutes=30, id="scoring_job")
+scheduler.add_job(run_feeds_job, "interval", minutes=30, id="feeds_job")
+scheduler.add_job(run_cisa_job, "interval", hours=6, id="cisa_job")
+scheduler.add_job(run_epss_job, "interval", hours=12, id="epss_job")
 
-def run_nvd_enrichment_job():
-    db = SessionLocal()
-    try:
-        vuln = db.query(Vulnerability).filter(Vulnerability.severity == None).order_by(Vulnerability.cisa_date_added.desc().nulls_last()).first()
-        if vuln:
-            enrich_cve_with_nvd(db, vuln.cve_id)
-    except Exception as e:
-        logger.error(f"Erro no job NVD: {e}")
-    finally:
-        db.close()
-
-def run_feeds_job():
-    db = SessionLocal()
-    try:
-        fetch_and_save_feeds(db)
-    except Exception as e:
-        logger.error(f"Erro no job Feeds: {e}")
-    finally:
-        db.close()
-
-def run_translation_job():
-    db = SessionLocal()
-    try:
-        translator = GoogleTranslator(source='auto', target='pt')
-        
-        # Pega a notícia mais recente não traduzida
-        adv = db.query(Advisory).filter(Advisory.title_pt == None).order_by(Advisory.published_at.desc().nulls_last()).first()
-        if adv:
-            try:
-                t = adv.title[:4900] if adv.title else ""
-                d = adv.description[:4900] if adv.description else ""
-                adv.title_pt = translator.translate(t) if t else adv.title
-                adv.description_pt = translator.translate(d) if d else adv.description
-                db.commit()
-            except:
-                db.rollback()
-                # Salva o original para não ficar preso no mesmo item
-                adv.title_pt = adv.title
-                adv.description_pt = adv.description
-                db.commit()
-            return 
-        
-        # Pega a vulnerabilidade mais recente não traduzida
-        vuln = db.query(Vulnerability).filter(Vulnerability.title_pt == None).order_by(Vulnerability.cisa_date_added.desc().nulls_last()).first()
-        if vuln:
-            try:
-                t = vuln.title[:4900] if vuln.title else ""
-                d = vuln.description[:4900] if vuln.description else ""
-                act = vuln.cisa_required_action[:4900] if vuln.cisa_required_action else ""
-                
-                vuln.title_pt = translator.translate(t) if t else vuln.title
-                vuln.description_pt = translator.translate(d) if d else vuln.description
-                vuln.cisa_required_action_pt = translator.translate(act) if act else vuln.cisa_required_action
-                db.commit()
-            except:
-                db.rollback()
-                vuln.title_pt = vuln.title
-                vuln.description_pt = vuln.description
-                vuln.cisa_required_action_pt = vuln.cisa_required_action
-                db.commit()
-    except Exception as e:
-        pass
-    finally:
-        db.close()
-
-def run_scoring_job():
-    """Calcula o Score Customizado para vulnerabilidades que ainda não tem"""
-    db = SessionLocal()
-    try:
-        vulns = db.query(Vulnerability).filter(Vulnerability.custom_risk_score == None).limit(50).all()
-        if vulns:
-            for vuln in vulns:
-                score = calculate_custom_risk_score(vuln.cvss_score, vuln.known_exploited, vuln.cisa_date_added)
-                vuln.custom_risk_score = score
-            db.commit()
-    except Exception as e:
-        db.rollback()
-    finally:
-        db.close()
-
-def run_cisa_job():
-    db = SessionLocal()
-    try:
-        fetch_and_save_cisa_kev(db)
-    except Exception as e:
-        pass
-    finally:
-        db.close()
-
-scheduler.add_job(run_nvd_enrichment_job, 'interval', seconds=15, id='nvd_job')
-scheduler.add_job(run_feeds_job, 'interval', minutes=10, id='feeds_job')
-scheduler.add_job(run_translation_job, 'interval', seconds=5, id='translate_job')
-scheduler.add_job(run_scoring_job, 'interval', seconds=10, id='scoring_job')
-scheduler.add_job(run_cisa_job, 'interval', hours=6, id='cisa_job')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.start()
-    run_feeds_job()
-    run_cisa_job()
-    run_scoring_job() # Calcula alguns scores no inicio
+    run_migrations()
+    if config.ENABLE_SCHEDULER:
+        scheduler.start()
+        # Coleta inicial em segundo plano: a API sobe na hora, sem esperar CISA/EPSS.
+        threading.Thread(target=run_full_refresh, name="initial-refresh", daemon=True).start()
     yield
-    scheduler.shutdown()
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+
 
 app = FastAPI(
     title="CyberPulse API",
     description="API para a Plataforma Aberta de Inteligência em Segurança",
-    version="0.1.0",
-    lifespan=lifespan
+    version="0.2.0",
+    lifespan=lifespan,
+    docs_url="/docs" if config.ENABLE_DOCS else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if config.ENABLE_DOCS else None,
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.CORS_ORIGINS,
+    allow_origin_regex=config.CORS_ORIGIN_REGEX,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-Gemini-Key"],
+    max_age=600,
 )
+
+CveId = Path(..., pattern=r"^CVE-\d{4}-\d{4,7}$", max_length=20)
+
+_VULN_FIELDS = (
+    "id", "cve_id", "title", "description", "severity", "cvss_score", "cvss_vector", "vendor", "product",
+    "known_exploited", "ransomware_use", "epss_score", "epss_percentile", "cisa_date_added",
+    "cisa_required_action", "cisa_due_date", "published_at", "custom_risk_score", "source",
+)
+
+
+def _vuln_to_dict(v: Vulnerability, lang: str) -> dict:
+    data = {f: getattr(v, f) for f in _VULN_FIELDS}
+    if lang == "pt-br":
+        data["title"] = v.title_pt or v.title
+        data["description"] = v.description_pt or v.description
+        data["cisa_required_action"] = v.cisa_required_action_pt or v.cisa_required_action
+    data["has_ai_analysis"] = bool(v.ai_analysis)
+    return data
+
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "CyberPulse API está rodando!"}
+    return {"status": "ok"}
 
-from app.collectors.nvd import enrich_cve_with_nvd, fetch_new_cve
 
 @app.get("/api/v1/vulnerabilities")
-def list_vulnerabilities(db: Session = Depends(get_db), limit: int = 50, lang: str = 'en', q: str = None, sort: str = "score"):
-    # Filtro de Busca
+def list_vulnerabilities(
+    request: Request,
+    db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+    lang: Literal["en", "pt-br"] = "en",
+    q: str | None = Query(None, max_length=100),
+    sort: Literal["score", "recent"] = "score",
+):
+    q = (q or "").strip()
     query = db.query(Vulnerability)
     if q:
-        search = f"%{q}%"
+        search = f"%{q.replace('%', '').replace('_', '')}%"
         query = query.filter(
-            (Vulnerability.cve_id.ilike(search)) | 
-            (Vulnerability.title.ilike(search)) |
-            (Vulnerability.vendor.ilike(search)) |
-            (Vulnerability.product.ilike(search))
+            Vulnerability.cve_id.ilike(search)
+            | Vulnerability.title.ilike(search)
+            | Vulnerability.vendor.ilike(search)
+            | Vulnerability.product.ilike(search)
         )
-    
-    if sort == "recent":
-        vulns = query.order_by(Vulnerability.cisa_date_added.desc().nulls_last()).limit(limit).all()
-    else:
-        vulns = query.order_by(Vulnerability.custom_risk_score.desc().nulls_last()).limit(limit).all()
-    
-    # Se a busca estiver vazia e parecer um CVE (CVE-XXXX-XXXX), buscar no NVD em tempo real
-    if q and len(vulns) == 0 and q.upper().startswith("CVE-"):
-        logger.info(f"Pesquisa por {q} retornou 0 resultados. Iniciando busca no NVD...")
-        res = fetch_new_cve(db, q.upper())
+
+    order = (
+        Vulnerability.cisa_date_added.desc().nulls_last()
+        if sort == "recent"
+        else Vulnerability.custom_risk_score.desc().nulls_last()
+    )
+    vulns = query.order_by(order).limit(limit).all()
+
+    # CVE não está no banco: busca em tempo real no NVD (com limite por IP).
+    cve_candidate = q.upper()
+    if not vulns and is_valid_cve_id(cve_candidate):
+        search_limiter.check(request)
+        res = fetch_new_cve(db, cve_candidate)
         if res.get("status") == "success":
-            if sort == "recent":
-                vulns = query.order_by(Vulnerability.cisa_date_added.desc().nulls_last()).limit(limit).all()
-            else:
-                vulns = query.order_by(Vulnerability.custom_risk_score.desc().nulls_last()).limit(limit).all()
-    
-    if lang == 'pt-br':
-        result = []
-        for v in vulns:
-            v_dict = v.__dict__.copy()
-            v_dict.pop('_sa_instance_state', None)
-            if v.title_pt: v_dict['title'] = v.title_pt
-            if v.description_pt: v_dict['description'] = v.description_pt
-            if v.cisa_required_action_pt: v_dict['cisa_required_action'] = v.cisa_required_action_pt
-            result.append(v_dict)
-        return result
-        
-    return vulns
+            vulns = [res["vuln"]]
 
-@app.get("/api/v1/advisories")
-def list_advisories(db: Session = Depends(get_db), limit: int = 20, lang: str = 'en'):
-    advisories = db.query(Advisory).order_by(Advisory.published_at.desc().nulls_last()).limit(limit).all()
-    if lang == 'pt-br':
-        result = []
-        for a in advisories:
-            a_dict = a.__dict__.copy()
-            a_dict.pop('_sa_instance_state', None)
-            if a.title_pt: a_dict['title'] = a.title_pt
-            if a.description_pt: a_dict['description'] = a.description_pt
-            result.append(a_dict)
-        return result
-    return advisories
+    return [_vuln_to_dict(v, lang) for v in vulns]
 
-@app.post("/api/v1/vulnerabilities/{cve_id}/analyze")
-def analyze_vulnerability_with_ai(cve_id: str, x_gemini_key: str = Header(None), db: Session = Depends(get_db)):
-    """Integração com IA (Google Gemini) usando Token do Cliente"""
-    if not x_gemini_key:
-        raise HTTPException(status_code=401, detail="CHAVE_API_NAO_FORNECIDA: Informe sua chave do Gemini para utilizar a IA.")
-        
+
+@app.get("/api/v1/vulnerabilities/{cve_id}/score")
+def explain_score(cve_id: str = CveId, db: Session = Depends(get_db)):
+    """Mostra de onde vem a nota de risco (transparência do motor de priorização)."""
     vuln = db.query(Vulnerability).filter(Vulnerability.cve_id == cve_id).first()
     if not vuln:
         raise HTTPException(status_code=404, detail="Vulnerabilidade não encontrada")
-        
+    parts = score_components(ScoreInput(
+        cvss_score=vuln.cvss_score, known_exploited=bool(vuln.known_exploited), ransomware_use=vuln.ransomware_use,
+        epss_score=vuln.epss_score, cisa_date_added=vuln.cisa_date_added, cisa_due_date=vuln.cisa_due_date,
+        published_at=vuln.published_at,
+    ))
+    return {
+        "cve_id": cve_id,
+        "score": vuln.custom_risk_score,
+        "components": {k: {"value": round(v, 3), "weight": WEIGHTS[k], "points": round(v * WEIGHTS[k] * 10, 2)} for k, v in parts.items()},
+    }
+
+
+@app.get("/api/v1/advisories")
+def list_advisories(
+    db: Session = Depends(get_db),
+    limit: int = Query(20, ge=1, le=100),
+    lang: Literal["en", "pt-br"] = "en",
+):
+    advisories = db.query(Advisory).order_by(Advisory.published_at.desc().nulls_last()).limit(limit).all()
+    result = []
+    for a in advisories:
+        result.append({
+            "id": a.id,
+            "title": (a.title_pt or a.title) if lang == "pt-br" else a.title,
+            "description": (a.description_pt or a.description) if lang == "pt-br" else a.description,
+            "vendor": a.vendor,
+            "source_url": a.source_url,
+            "published_at": a.published_at,
+        })
+    return result
+
+
+def _analysis_payload(vuln: Vulnerability, cached: bool) -> dict:
     try:
-        # Configura a IA com a chave que o usuário informou no Frontend
-        genai.configure(api_key=x_gemini_key)
-        model = genai.GenerativeModel('gemini-3.5-flash')
-        
-        prompt = f"""
-        Você é um sistema de Inteligência de Ameaças focado em simplificar problemas complexos de segurança para pessoas leigas e fornecer ações extremamente diretas.
-        Abaixo estão os detalhes de uma vulnerabilidade extraídos do NVD e da CISA:
-        
-        CVE: {vuln.cve_id}
-        Produto/Fabricante: {vuln.vendor} {vuln.product}
-        Título: {vuln.title}
-        Descrição Técnica Original: {vuln.description}
-        Ação Exigida (CISA): {vuln.cisa_required_action}
-        Sendo explorada ativamente por hackers: {"SIM (CISA KEV)" if vuln.known_exploited else "NÃO / DESCONHECIDO"}
-        
-        Sua tarefa é explicar isso de forma extremamente simples, didática e acessível (como se explicasse para um leigo), sem jargões confusos. Responda ESTRITAMENTE no formato abaixo, sem usar "#" ou "###" para títulos. Use apenas **Texto** para os títulos:
-        
-        **O QUE É A VULNERABILIDADE**
-        [OBRIGATÓRIO: Informe logo na primeira frase, de maneira bem destacada, se esta falha já está sendo usada por hackers ativamente no mundo real (baseado no campo 'Sendo explorada ativamente' acima). Em seguida, dê a sua explicação da falha, usando uma analogia simples e explicando o impacto]
-        
-        **COMO VERIFICAR SE VOCÊ ESTÁ VULNERÁVEL**
-        [ATENÇÃO: VOCÊ DEVE BUSCAR NA SUA BASE DE CONHECIMENTO INFORMAÇÕES REAIS SOBRE ESTE CVE ESPECÍFICO. 
-        Passo a passo prático com comandos reais e específicos ao produto/fabricante/SO. 
-        OBRIGATÓRIO: Se for uma vulnerabilidade do Windows, DEVE LISTAR explicitamente quais são os números de KB (ex: KB5001234) da Microsoft afetados ou as versões. Não dê respostas genéricas como "veja no site do fabricante". Diga o KB exato e ensine o comando (ex: Get-HotFix). Se for Linux, software ou biblioteca, liste as versões vulneráveis exatas da sua pesquisa e dê o comando ou caminho exato para o usuário descobrir a versão atual. Coloque os comandos em blocos de código markdown.]
-        
-        **PLANO DE AÇÃO**
-        [Traduzir a ação da CISA ou mitigação técnica em passos numerados e práticos]
-        
-        REGRAS IMPORTANTES: 
-        - Responda em Português do Brasil (PT-BR).
-        - NÃO adivinhe a profissão do leitor e não use tratamentos (NÃO chame de "analista", "júnior", "amigo", etc).
-        - NÃO adicione saudações ou despedidas. Apenas entregue a explicação formatada.
-        - Use listas com "-" ou números sempre que houver múltiplos itens.
-        - NÃO altere os títulos das seções. Eles devem ser EXATAMENTE os três descritos acima, em letras maiúsculas e entre **.
-        """
-        
-        try:
-            # Tenta usar o modelo PRO e ativar a busca no Google (Search Grounding) para encontrar o KB real
-            model = genai.GenerativeModel('gemini-3.5-pro')
-            response = model.generate_content(prompt, tools="google_search_retrieval")
-        except Exception as e_search:
-            logger.warning(f"Erro ao usar modelo PRO ou Search: {e_search}. Fazendo fallback para flash e sem search...")
-            # Fallback para o flash sem busca
-            model = genai.GenerativeModel('gemini-3.5-flash')
-            response = model.generate_content(prompt)
-            
-        return {"cve_id": cve_id, "ai_analysis": response.text}
-        
-    except Exception as e:
-        logger.error(f"Erro na IA: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro ao conectar com a IA: {str(e)}")
+        sources = json.loads(vuln.ai_analysis_sources or "[]")
+    except ValueError:
+        sources = []
+    return {
+        "cve_id": vuln.cve_id,
+        "ai_analysis": vuln.ai_analysis,
+        "model": vuln.ai_analysis_model,
+        "generated_at": vuln.ai_analysis_at,
+        "cached": cached,
+        "sources": sources,
+    }
 
-@app.get("/api/v1/collect/cisa")
-def trigger_cisa_collection(db: Session = Depends(get_db)):
-    return fetch_and_save_cisa_kev(db)
 
-@app.get("/api/v1/collect/nvd/{cve_id}")
-def trigger_nvd_enrichment(cve_id: str, db: Session = Depends(get_db)):
-    return enrich_cve_with_nvd(db, cve_id)
+@app.get("/api/v1/vulnerabilities/{cve_id}/analysis")
+def get_cached_analysis(cve_id: str = CveId, db: Session = Depends(get_db)):
+    """Devolve a análise de IA já gerada (não precisa de chave)."""
+    vuln = db.query(Vulnerability).filter(Vulnerability.cve_id == cve_id).first()
+    if not vuln or not vuln.ai_analysis:
+        raise HTTPException(status_code=404, detail="Nenhuma análise salva para esta vulnerabilidade.")
+    return _analysis_payload(vuln, cached=True)
+
+
+@app.post("/api/v1/vulnerabilities/{cve_id}/analyze")
+def analyze_vulnerability_with_ai(
+    request: Request,
+    cve_id: str = CveId,
+    force: bool = False,
+    x_gemini_key: str | None = Header(None, max_length=200),
+    db: Session = Depends(get_db),
+):
+    """Gera (ou reaproveita) a análise da IA usando a chave do próprio usuário."""
+    vuln = db.query(Vulnerability).filter(Vulnerability.cve_id == cve_id).first()
+    if not vuln:
+        raise HTTPException(status_code=404, detail="Vulnerabilidade não encontrada")
+
+    fresh_until = (vuln.ai_analysis_at or datetime.min) + timedelta(days=config.AI_CACHE_DAYS)
+    if vuln.ai_analysis and not force and datetime.utcnow() < fresh_until:
+        return _analysis_payload(vuln, cached=True)
+
+    key = (x_gemini_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=401, detail="CHAVE_API_NAO_FORNECIDA: informe sua chave do Gemini para gerar a análise.")
+
+    ai_limiter.check(request)
+    try:
+        result = ai.analyze(vuln, key)
+    except ai.AIError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+
+    vuln.ai_analysis = result.text
+    vuln.ai_analysis_model = result.model
+    vuln.ai_analysis_at = datetime.utcnow()
+    vuln.ai_analysis_sources = json.dumps(result.sources, ensure_ascii=False)
+    db.commit()
+    return _analysis_payload(vuln, cached=False)
+
+
+@app.post("/api/v1/admin/run/{job}", dependencies=[Depends(require_admin)])
+def run_job(job: Literal["cisa", "feeds", "epss", "scoring", "nvd", "all"]):
+    """Dispara uma coleta manualmente (usado pelo cron do GitHub Actions)."""
+    threading.Thread(target=JOBS[job], name=f"admin-{job}", daemon=True).start()
+    return {"status": "started", "job": job}

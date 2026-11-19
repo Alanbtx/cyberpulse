@@ -1,4 +1,5 @@
 import feedparser
+import httpx
 import logging
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -24,12 +25,18 @@ def fetch_and_save_feeds(db: Session):
         url = feed_info["url"]
         
         try:
-            parsed = feedparser.parse(url)
+            # Baixa com timeout (feedparser.parse(url) pode travar o agendador indefinidamente)
+            with httpx.Client(timeout=30.0, follow_redirects=True, headers={"User-Agent": feedparser.USER_AGENT}) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+            parsed = feedparser.parse(resp.content)
             
             # Pegamos os 15 mais recentes de cada feed para ser rápido
             for entry in parsed.entries[:15]:
                 # Evita duplicados pela URL
-                source_url = entry.link
+                source_url = getattr(entry, "link", None)
+                if not source_url or not source_url.startswith(("https://", "http://")):
+                    continue
                 db_adv = db.query(Advisory).filter(Advisory.source_url == source_url).first()
                 
                 if not db_adv:

@@ -17,8 +17,8 @@ def fetch_and_save_cisa_kev(db: Session):
     
     try:
         # Faz o download do arquivo JSON
-        with httpx.Client() as client:
-            response = client.get(CISA_KEV_URL, timeout=30.0)
+        with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+            response = client.get(CISA_KEV_URL)
             response.raise_for_status()
             data = response.json()
             
@@ -34,6 +34,8 @@ def fetch_and_save_cisa_kev(db: Session):
         
         for item in vulnerabilities:
             cve_id = item.get("cveID")
+            if not cve_id:
+                continue
             
             # Formata as datas que vêm como YYYY-MM-DD
             date_added_str = item.get("dateAdded")
@@ -41,6 +43,8 @@ def fetch_and_save_cisa_kev(db: Session):
             date_added = datetime.strptime(date_added_str, "%Y-%m-%d").date() if date_added_str else None
             due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date() if due_date_str else None
             
+            ransomware = (item.get("knownRansomwareCampaignUse") or "").strip().lower() == "known"
+
             # Pega do cache em memória (O(1))
             db_vuln = vulns_existentes.get(cve_id)
             
@@ -54,6 +58,7 @@ def fetch_and_save_cisa_kev(db: Session):
                 db_vuln.cisa_date_added = date_added
                 db_vuln.cisa_required_action = item.get("requiredAction")
                 db_vuln.cisa_due_date = due_date
+                db_vuln.ransomware_use = ransomware
                 atualizadas += 1
             else:
                 # Cria uma nova vulnerabilidade
@@ -67,6 +72,7 @@ def fetch_and_save_cisa_kev(db: Session):
                     cisa_date_added=date_added,
                     cisa_required_action=item.get("requiredAction"),
                     cisa_due_date=due_date,
+                    ransomware_use=ransomware,
                     source="CISA KEV"
                 )
                 db.add(nova_vuln)
@@ -81,4 +87,4 @@ def fetch_and_save_cisa_kev(db: Session):
     except Exception as e:
         logger.error(f"Erro ao coletar CISA KEV: {str(e)}")
         db.rollback()
-        return {"status": "error", "detail": str(e)}
+        return {"status": "error", "detail": type(e).__name__}

@@ -1,25 +1,22 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# Variáveis de ambiente para o Python
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Instala dependências do sistema
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copia o arquivo de requisitos e instala as dependências do Python
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
-# Copia o código da aplicação
-COPY . .
+COPY app ./app
 
-# Expõe a porta que o Uvicorn irá utilizar
+# Não roda como root
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
 EXPOSE 8000
 
-# Comando para iniciar o servidor
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Sem --reload em produção. --proxy-headers faz o uvicorn usar o IP real (X-Forwarded-For)
+# vindo do proxy do Render, necessário para o limite de requisições por IP.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
