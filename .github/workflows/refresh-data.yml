@@ -1,0 +1,29 @@
+name: Atualizar dados (cron)
+
+# O plano gratuito do Render hiberna e para o agendador interno.
+# Este cron acorda a API e dispara a coleta completa (CISA + feeds + EPSS + score).
+# Requer os secrets API_URL (ex: https://cyberpulse-nssv.onrender.com) e ADMIN_TOKEN.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Acordar a API
+        run: |
+          for i in 1 2 3 4 5 6; do
+            curl -fsS --max-time 60 "${{ secrets.API_URL }}/health" && break
+            sleep 20
+          done
+      - name: Disparar coleta completa
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          curl -fsS --max-time 60 -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "${{ secrets.API_URL }}/api/v1/admin/run/all"
+          curl -fsS --max-time 60 -X POST -H "X-Admin-Token: $ADMIN_TOKEN" "${{ secrets.API_URL }}/api/v1/admin/run/nvd"
