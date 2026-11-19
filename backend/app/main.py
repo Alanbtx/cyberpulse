@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app import ai, config
 from app.collectors.nvd import fetch_new_cve, is_valid_cve_id
 from app.database import get_db, run_migrations
+from app.filters import VulnFilters, build_query, facets, parse_severities
 from app.jobs import (
     JOBS,
     run_full_refresh,
@@ -96,42 +97,80 @@ def health_check():
     return {"status": "ok"}
 
 
+def _filters(
+    q: str | None = Query(None, max_length=100),
+    vendor: str | None = Query(None, max_length=100),
+    severity: str | None = Query(None, max_length=60, description="Lista separada por vírgula: CRITICAL,HIGH,MEDIUM,LOW,PENDING"),
+    ransomware: bool = False,
+    due_within_days: int | None = Query(None, ge=1, le=365),
+    added_within_days: int | None = Query(None, ge=1, le=3650),
+    min_score: float | None = Query(None, ge=0, le=10),
+    sort: Literal["score", "recent", "epss", "due"] = "score",
+) -> VulnFilters:
+    return VulnFilters(
+        q=(q or "").strip(), vendor=(vendor or "").strip() or None, severities=parse_severities(severity),
+        ransomware=ransomware, due_within_days=due_within_days, added_within_days=added_within_days,
+        min_score=min_score, sort=sort,
+    )
+
+
+def _realtime_nvd_lookup(request: Request, db: Session, f: VulnFilters):
+    """CVE pesquisada não está no banco: busca em tempo real no NVD (com limite por IP)."""
+    candidate = f.q.upper()
+    if f.is_plain_search and is_valid_cve_id(candidate):
+        search_limiter.check(request)
+        res = fetch_new_cve(db, candidate)
+        if res.get("status") == "success":
+            return res["vuln"]
+    return None
+
+
 @app.get("/api/v1/vulnerabilities")
 def list_vulnerabilities(
     request: Request,
     db: Session = Depends(get_db),
     limit: int = Query(50, ge=1, le=200),
     lang: Literal["en", "pt-br"] = "en",
-    q: str | None = Query(None, max_length=100),
-    sort: Literal["score", "recent"] = "score",
+    f: VulnFilters = Depends(_filters),
 ):
-    q = (q or "").strip()
-    query = db.query(Vulnerability)
-    if q:
-        search = f"%{q.replace('%', '').replace('_', '')}%"
-        query = query.filter(
-            Vulnerability.cve_id.ilike(search)
-            | Vulnerability.title.ilike(search)
-            | Vulnerability.vendor.ilike(search)
-            | Vulnerability.product.ilike(search)
-        )
-
-    order = (
-        Vulnerability.cisa_date_added.desc().nulls_last()
-        if sort == "recent"
-        else Vulnerability.custom_risk_score.desc().nulls_last()
-    )
-    vulns = query.order_by(order).limit(limit).all()
-
-    # CVE não está no banco: busca em tempo real no NVD (com limite por IP).
-    cve_candidate = q.upper()
-    if not vulns and is_valid_cve_id(cve_candidate):
-        search_limiter.check(request)
-        res = fetch_new_cve(db, cve_candidate)
-        if res.get("status") == "success":
-            vulns = [res["vuln"]]
-
+    """Lista simples (compatível com versões antigas do frontend)."""
+    vulns = build_query(db, f).limit(limit).all()
+    if not vulns:
+        found = _realtime_nvd_lookup(request, db, f)
+        vulns = [found] if found else []
     return [_vuln_to_dict(v, lang) for v in vulns]
+
+
+@app.get("/api/v1/vulnerabilities/search")
+def search_vulnerabilities(
+    request: Request,
+    db: Session = Depends(get_db),
+    page: int = Query(1, ge=1, le=10_000),
+    page_size: int = Query(25, ge=1, le=100),
+    lang: Literal["en", "pt-br"] = "en",
+    f: VulnFilters = Depends(_filters),
+):
+    """Listagem paginada com filtros. Devolve itens + total para montar a paginação."""
+    query = build_query(db, f)
+    total = query.order_by(None).count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    if total == 0:
+        found = _realtime_nvd_lookup(request, db, f)
+        if found:
+            items, total = [found], 1
+    return {
+        "items": [_vuln_to_dict(v, lang) for v in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, -(-total // page_size)),
+    }
+
+
+@app.get("/api/v1/vulnerabilities/facets")
+def vulnerability_facets(db: Session = Depends(get_db)):
+    """Opções e contagens para montar os filtros (fabricantes, severidades, atalhos)."""
+    return facets(db)
 
 
 @app.get("/api/v1/vulnerabilities/{cve_id}/score")

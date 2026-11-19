@@ -1,4 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
+import FilterBar from './components/FilterBar';
+import Pagination from './components/Pagination';
+import type { Facets, Filters } from './filters';
+import { DEFAULT_FILTERS, fromUrlParams, hasActiveFilters, toApiParams, toUrlParams } from './filters';
 
 // Tipagens
 interface Vulnerability {
@@ -20,6 +24,14 @@ interface Vulnerability {
   epss_score?: number | null;
   epss_percentile?: number | null;
   has_ai_analysis?: boolean;
+}
+
+interface SearchResponse {
+  items: Vulnerability[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
 }
 
 interface AiSource {
@@ -75,9 +87,14 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Search State
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<'score' | 'recent'>('score');
+  // Filtros, busca e paginação (sincronizados com a URL)
+  const [filters, setFilters] = useState<Filters>(() => fromUrlParams(window.location.search));
+  const [searchInput, setSearchInput] = useState(filters.q);
+  const [total, setTotal] = useState(0);
+  const [pages, setPages] = useState(1);
+  const [facets, setFacets] = useState<Facets | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const listController = useRef<AbortController | null>(null);
 
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
 
@@ -93,33 +110,62 @@ function App() {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  const fetchData = (q: string = '', sortMode: string = sortBy) => {
-    setLoading(true);
-    setError(null);
-    const params = new URLSearchParams({ lang: 'pt-br', sort: sortMode, limit: '100' });
-    const query = q.trim().slice(0, 100);
-    if (query) params.set('q', query);
+  // Backend antigo (sem /search): usa a lista simples para não quebrar durante o deploy.
+  const loadLegacy = async (f: Filters, signal: AbortSignal): Promise<SearchResponse> => {
+    const params = new URLSearchParams({ lang: 'pt-br', sort: f.sort === 'recent' ? 'recent' : 'score', limit: '100' });
+    if (f.q.trim()) params.set('q', f.q.trim().slice(0, 100));
+    const res = await fetch(`${API_BASE_URL}/api/v1/vulnerabilities?${params}`, { signal });
+    if (!res.ok) throw new Error(await readError(res));
+    const items: Vulnerability[] = await res.json();
+    return { items, total: items.length, page: 1, page_size: items.length || 1, pages: 1 };
+  };
 
-    fetch(`${API_BASE_URL}/api/v1/vulnerabilities?${params}`)
+  const loadPage = (f: Filters) => {
+    listController.current?.abort();
+    const ctrl = new AbortController();
+    listController.current = ctrl;
+    setRefreshing(true);
+    setError(null);
+
+    fetch(`${API_BASE_URL}/api/v1/vulnerabilities/search?${toApiParams(f)}`, { signal: ctrl.signal })
       .then(async res => {
+        if (res.status === 404) return loadLegacy(f, ctrl.signal);
         if (!res.ok) throw new Error(await readError(res));
-        return res.json();
+        return res.json() as Promise<SearchResponse>;
       })
-      .then((vulnsData: Vulnerability[]) => {
-        setVulns(Array.isArray(vulnsData) ? vulnsData : []);
-        setLoading(false);
+      .then(data => {
+        setVulns(Array.isArray(data.items) ? data.items : []);
+        setTotal(data.total);
+        setPages(data.pages);
+        // Página além do fim (ex: um filtro reduziu os resultados): volta para a última.
+        if (data.total > 0 && f.page > data.pages) setFilters(prev => ({ ...prev, page: data.pages }));
       })
       .catch(err => {
+        if (err?.name === 'AbortError') return;
         console.error("Erro ao buscar a API:", err);
         setError(err instanceof Error && err.message !== 'Failed to fetch'
           ? err.message
           : "FALHA DE COMUNICAÇÃO COM O SERVIDOR. ELE PODE ESTAR INICIANDO (ATÉ 1 MIN) — TENTE NOVAMENTE.");
-        setLoading(false);
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       });
   };
 
   useEffect(() => {
-    fetchData(searchQuery);
+    loadPage(filters);
+    const qs = toUrlParams(filters).toString();
+    window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname);
+  }, [filters]);
+
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/v1/vulnerabilities/facets`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => data && setFacets(data))
+      .catch(() => {});
 
     const stored = readStoredKey();
     if (stored.key) {
@@ -137,14 +183,24 @@ function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    fetchData(searchQuery, sortBy);
+  // Qualquer mudança de filtro volta para a página 1 (exceto mudar a própria página).
+  const updateFilters = (patch: Partial<Filters>) => {
+    setFilters(prev => ({ ...prev, ...patch, page: patch.page ?? 1 }));
   };
 
-  const handleSortChange = (newSort: 'score' | 'recent') => {
-    setSortBy(newSort);
-    fetchData(searchQuery, newSort);
+  const resetFilters = () => {
+    setSearchInput('');
+    setFilters(prev => ({ ...DEFAULT_FILTERS, sort: prev.sort, pageSize: prev.pageSize }));
+  };
+
+  const goToPage = (page: number) => {
+    updateFilters({ page });
+    document.getElementById('ameacas')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateFilters({ q: searchInput.trim() });
   };
 
   const saveApiKey = () => {
@@ -458,9 +514,14 @@ function App() {
               <div className="w-16 h-16 border-4 border-emerald-900 border-t-emerald-400 rounded-full animate-spin shadow-[0_0_15px_rgba(16,185,129,0.5)]"></div>
               <div className="text-emerald-400 text-sm tracking-[0.3em] uppercase animate-pulse">ESTABELECENDO CONEXÃO SEGURA...</div>
             </div>
-          ) : error ? (
+          ) : error && vulns.length === 0 ? (
             <div className="p-8 border border-red-500/50 bg-red-950/20 text-center text-red-500 font-bold uppercase tracking-widest shadow-[0_0_20px_rgba(239,68,68,0.3)]">
               [ ERRO: {error} ]
+              <div className="mt-4">
+                <button onClick={() => loadPage(filters)} className="text-xs border border-red-500 px-4 py-2 hover:bg-red-500 hover:text-black transition-colors">
+                  [ TENTAR NOVAMENTE ]
+                </button>
+              </div>
             </div>
           ) : (
             <div className="space-y-12">
@@ -468,25 +529,11 @@ function App() {
 
 
               {/* Tabela de Vulnerabilidades e Busca */}
-              <section>
+              <section id="ameacas" className="scroll-mt-20">
                 <div className="mb-6 flex flex-col sm:flex-row justify-between items-end gap-4">
                   <div className="flex items-center gap-3 w-full sm:w-auto">
                     <div className="h-0.5 w-12 bg-emerald-900/50"></div>
                     <h2 className="text-xl font-bold text-red-500 uppercase tracking-[0.2em] drop-shadow-[0_0_8px_rgba(239,68,68,0.5)] whitespace-nowrap">AMEAÇAS ATIVAS</h2>
-                    <div className="flex gap-2 ml-2">
-                      <button
-                        onClick={() => handleSortChange('score')}
-                        className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'score' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
-                      >
-                        CRITICIDADE
-                      </button>
-                      <button
-                        onClick={() => handleSortChange('recent')}
-                        className={`text-[9px] px-2 py-1 uppercase tracking-widest border transition-colors ${sortBy === 'recent' ? 'border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold' : 'border-emerald-900/50 text-emerald-700 hover:text-emerald-500'}`}
-                      >
-                        CISA_RECENTES
-                      </button>
-                    </div>
                     <div className="h-0.5 flex-grow bg-emerald-900/50 hidden lg:block"></div>
                   </div>
 
@@ -496,8 +543,10 @@ function App() {
                       <span className="text-emerald-600 mr-2">&gt;_</span>
                       <input
                         type="text"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
+                        value={searchInput}
+                        maxLength={100}
+                        aria-label="Pesquisar CVE ou sistema"
+                        onChange={(e) => setSearchInput(e.target.value)}
                         placeholder="PESQUISAR_CVE_OU_SISTEMA..."
                         className="bg-transparent border-none text-emerald-400 focus:outline-none uppercase text-xs tracking-widest placeholder-emerald-900/70 w-full sm:w-64"
                       />
@@ -508,15 +557,20 @@ function App() {
                   </form>
                 </div>
 
-                <div className="mb-3 text-[10px] tracking-widest text-emerald-600/70 uppercase text-right">
-                  {searchQuery
-                    ? `[ BUSCA CONCLUÍDA: ENCONTRADAS ${vulns.length} AMEAÇAS PARA "${searchQuery}" ]`
-                    : sortBy === 'score'
-                      ? `[ SISTEMA EXIBINDO AS ${vulns.length} VULNERABILIDADES MAIS CRÍTICAS... ]`
-                      : `[ SISTEMA EXIBINDO AS ${vulns.length} VULNERABILIDADES MAIS RECENTES... ]`}
+                <FilterBar filters={filters} facets={facets} onChange={updateFilters} onReset={resetFilters} />
+
+                <div className="mb-3 text-[10px] tracking-widest text-emerald-600/70 uppercase text-right" aria-live="polite">
+                  {refreshing
+                    ? '[ CONSULTANDO BASE DE AMEAÇAS... ]'
+                    : filters.q
+                      ? `[ BUSCA CONCLUÍDA: ${total} AMEAÇAS PARA "${filters.q}" ]`
+                      : hasActiveFilters(filters)
+                        ? `[ ${total} AMEAÇAS CORRESPONDEM AOS FILTROS ]`
+                        : `[ ${total} AMEAÇAS MONITORADAS ]`}
+                  {error && <span className="text-red-500 ml-2">[ ERRO: {error} ]</span>}
                 </div>
 
-                <div className="bg-black/50 border border-emerald-900/50 shadow-[0_0_30px_rgba(0,0,0,0.8)] overflow-hidden relative">
+                <div className={`bg-black/50 border border-emerald-900/50 shadow-[0_0_30px_rgba(0,0,0,0.8)] overflow-hidden relative transition-opacity ${refreshing ? 'opacity-50' : ''}`}>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-emerald-900/30">
                       <thead className="bg-emerald-950/20">
@@ -531,7 +585,12 @@ function App() {
                       <tbody className="divide-y divide-emerald-900/20 bg-transparent">
                         {vulns.length === 0 ? (
                           <tr>
-                            <td colSpan={5} className="py-12 text-center text-emerald-600 uppercase tracking-widest">NENHUM REGISTRO ENCONTRADO</td>
+                            <td colSpan={5} className="py-12 text-center text-emerald-600 uppercase tracking-widest">
+                              NENHUM REGISTRO ENCONTRADO
+                              {hasActiveFilters(filters) && (
+                                <button onClick={resetFilters} className="block mx-auto mt-3 text-[10px] underline text-zinc-500 hover:text-emerald-400">LIMPAR FILTROS</button>
+                              )}
+                            </td>
                           </tr>
                         ) : (
                           vulns.map((vuln) => (
@@ -571,6 +630,16 @@ function App() {
                     </table>
                   </div>
                 </div>
+
+                <Pagination
+                  page={filters.page}
+                  pages={pages}
+                  pageSize={filters.pageSize}
+                  total={total}
+                  disabled={refreshing}
+                  onPage={goToPage}
+                  onPageSize={pageSize => updateFilters({ pageSize })}
+                />
               </section>
 
             </div>

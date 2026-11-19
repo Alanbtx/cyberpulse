@@ -46,6 +46,16 @@ _NEW_COLUMNS = {
 }
 
 
+# Índices para as ordenações e filtros da listagem.
+_INDEXES = {
+    "ix_vuln_risk_score": ("vulnerabilities", "custom_risk_score"),
+    "ix_vuln_cisa_added": ("vulnerabilities", "cisa_date_added"),
+    "ix_vuln_cisa_due": ("vulnerabilities", "cisa_due_date"),
+    "ix_vuln_epss": ("vulnerabilities", "epss_score"),
+    "ix_vuln_vendor": ("vulnerabilities", "vendor"),
+}
+
+
 def run_migrations():
     Base.metadata.create_all(bind=engine)
     insp = inspect(engine)
@@ -56,3 +66,5 @@ def run_migrations():
                 if name not in existing:
                     logger.info("Migração: adicionando %s.%s", table, name)
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}"))
+        for index, (table, column) in _INDEXES.items():
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {index} ON {table} ({column})"))
