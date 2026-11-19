@@ -3,14 +3,16 @@
 Pontos importantes:
 - Um `genai.Client` por requisição: a chave de um usuário nunca vaza para a
   requisição de outro (o SDK antigo usava `genai.configure`, que é global).
-- Timeout e novas tentativas automáticas para 429/5xx.
+- Timeout e uma nova tentativa automática só para 5xx (429 = cota, não repete).
 - Fallback em cascata: modelo com Google Search -> mesmo modelo sem Search ->
-  modelo reserva (opcional).
+  modelos reserva (descobertos automaticamente na conta do usuário).
 - Erros traduzidos para mensagens claras, sem repassar a exceção crua.
 """
 from __future__ import annotations
 
 import logging
+import re
+import time
 from dataclasses import dataclass, field
 
 from google import genai
@@ -100,14 +102,77 @@ def _client(api_key: str) -> genai.Client:
         api_key=api_key,
         http_options=types.HttpOptions(
             timeout=config.GEMINI_TIMEOUT_SECONDS * 1000,  # milissegundos
+            # Repete só instabilidade do servidor, uma vez. 429 (cota) NÃO é repetido:
+            # repetir gasta mais cota e só atrasa a resposta.
             retry_options=types.HttpRetryOptions(
-                attempts=3,
-                initial_delay=2.0,
-                max_delay=10.0,
-                http_status_codes=[429, 500, 502, 503, 504],
+                attempts=2,
+                initial_delay=1.5,
+                max_delay=6.0,
+                http_status_codes=[500, 502, 503, 504],
             ),
         ),
     )
+
+
+# Cache da lista de modelos reserva (não depende da chave do usuário).
+_fallback_cache: dict = {"models": None, "at": 0.0}
+_FALLBACK_TTL = 3600
+_EXCLUDE = ("preview", "exp", "tts", "image", "audio", "live", "embed", "learnlm", "gemma",
+            "thinking", "computer", "robotics", "native", "veo", "imagen")
+
+
+def _version(name: str) -> float:
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+    return float(m.group(1)) if m else 0.0
+
+
+def pick_fallback_models(names: list[str], primary: str, limit: int = 2) -> list[str]:
+    """Escolhe modelos "flash" estáveis diferentes do principal: mais novos primeiro, "lite" antes."""
+    candidates = {
+        n for n in names
+        if "flash" in n and n != primary and not n.endswith("-latest")
+        and not any(bad in n for bad in _EXCLUDE)
+    }
+    return sorted(candidates, key=lambda n: (-_version(n), "lite" not in n, n))[:limit]
+
+
+def _fallback_models(client: genai.Client) -> list[str]:
+    if config.GEMINI_FALLBACK_MODEL:
+        return [m.strip() for m in config.GEMINI_FALLBACK_MODEL.split(",") if m.strip()]
+    now = time.monotonic()
+    if _fallback_cache["models"] is not None and now - _fallback_cache["at"] < _FALLBACK_TTL:
+        return list(_fallback_cache["models"])
+    try:
+        names = [
+            (m.name or "").removeprefix("models/")
+            for m in client.models.list(config={"page_size": 100})
+            if "generateContent" in (m.supported_actions or [])
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Não foi possível listar modelos do Gemini: %s", _describe(exc))
+        return []
+    models = pick_fallback_models(names, config.GEMINI_MODEL)
+    _fallback_cache.update(models=models, at=now)
+    logger.info("Modelos reserva do Gemini: %s", models)
+    return models
+
+
+def _describe(exc: Exception) -> str:
+    """Resumo do erro para log (código, status e mensagem do Google; nunca a chave)."""
+    code = getattr(exc, "code", "")
+    status = getattr(exc, "status", "")
+    message = str(getattr(exc, "message", None) or exc).replace("\n", " ")[:300]
+    return f"{type(exc).__name__} {code} {status}: {message}"
+
+
+def _retry_after_seconds(exc: Exception) -> int | None:
+    try:
+        for d in (getattr(exc, "details", None) or {}).get("error", {}).get("details", []):
+            if d.get("retryDelay"):
+                return int(float(str(d["retryDelay"]).rstrip("s")))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _extract_sources(response) -> list[dict]:
@@ -154,12 +219,15 @@ def _translate_error(exc: Exception) -> AIError:
         if exc.code in (401, 403):
             return AIError(401, "CHAVE_SEM_PERMISSAO: a chave do Gemini não tem acesso a este modelo.")
         if exc.code == 429:
-            return AIError(429, "COTA_ESGOTADA: o limite gratuito da sua chave do Gemini acabou. Aguarde alguns minutos e tente de novo.")
+            wait = _retry_after_seconds(exc)
+            when = f"Tente de novo em cerca de {wait} segundos." if wait else "Aguarde alguns minutos e tente de novo."
+            return AIError(429, f"COTA_ESGOTADA: o limite gratuito da sua chave do Gemini foi atingido. {when}")
         if exc.code == 404:
-            return AIError(502, "MODELO_INDISPONIVEL: o modelo de IA configurado não está disponível.")
+            return AIError(502, "MODELO_INDISPONIVEL: o modelo de IA configurado não está disponível para a sua chave.")
         return AIError(502, "A IA recusou a requisição. Tente novamente em instantes.")
     if isinstance(exc, errors.ServerError):
-        return AIError(503, "IA_SOBRECARREGADA: os servidores do Gemini estão instáveis. Tente novamente em instantes.")
+        return AIError(503, "IA_SOBRECARREGADA: o Google informou que os modelos Gemini estão sobrecarregados agora "
+                            "(problema do lado do Google, não da sua chave). Tente novamente em alguns minutos.")
     name = type(exc).__name__.lower()
     if "timeout" in name:
         return AIError(504, "TEMPO_ESGOTADO: a IA demorou demais para responder. Tente novamente.")
@@ -167,44 +235,65 @@ def _translate_error(exc: Exception) -> AIError:
 
 
 
+def _generate(client: genai.Client, vuln: Vulnerability, prompt: str, model: str, use_search: bool) -> AIResult:
+    cfg = types.GenerateContentConfig(
+        temperature=0.3,
+        tools=[types.Tool(google_search=types.GoogleSearch())] if use_search else None,
+    )
+    response = client.models.generate_content(model=model, contents=prompt, config=cfg)
+    text = _response_text(response)
+    missing = [s for s in REQUIRED_SECTIONS if s not in text.upper()]
+    if missing:
+        logger.info("Resposta da IA para %s sem as seções %s", vuln.cve_id, missing)
+    return AIResult(text=text, model=model, sources=_extract_sources(response) if use_search else [])
+
+
 def analyze(vuln: Vulnerability, api_key: str) -> AIResult:
+    """Fluxo: principal com busca -> principal sem busca -> modelos reserva sem busca.
+
+    - Chave inválida (401) para tudo na hora.
+    - Qualquer falha com busca (cota da busca, ferramenta não suportada...) cai para "sem busca".
+    - Cota, sobrecarga ou modelo indisponível no principal tenta os modelos reserva
+      (no plano gratuito cada modelo tem cota própria).
+    """
     client = _client(api_key)
     prompt = build_prompt(vuln)
+    errors_seen: list[AIError] = []
+    search_errors: list[AIError] = []
 
-    attempts: list[tuple[str, bool]] = []
-    if config.GEMINI_USE_SEARCH:
-        attempts.append((config.GEMINI_MODEL, True))
-    attempts.append((config.GEMINI_MODEL, False))
-    if config.GEMINI_FALLBACK_MODEL and config.GEMINI_FALLBACK_MODEL != config.GEMINI_MODEL:
-        attempts.append((config.GEMINI_FALLBACK_MODEL, False))
-
-    last_error: Exception | None = None
-    for model, use_search in attempts:
-        cfg = types.GenerateContentConfig(
-            temperature=0.3,
-            tools=[types.Tool(google_search=types.GoogleSearch())] if use_search else None,
-        )
+    def attempt(model: str, use_search: bool) -> AIResult | None:
+        started = time.monotonic()
         try:
-            response = client.models.generate_content(model=model, contents=prompt, config=cfg)
-            text = _response_text(response)
-            missing = [s for s in REQUIRED_SECTIONS if s not in text.upper()]
-            if missing:
-                logger.info("Resposta da IA para %s sem as seções %s", vuln.cve_id, missing)
-            return AIResult(text=text, model=model, sources=_extract_sources(response) if use_search else [])
+            return _generate(client, vuln, prompt, model, use_search)
         except Exception as exc:  # noqa: BLE001 - tratamos e traduzimos abaixo
-            last_error = exc
             translated = _translate_error(exc)
-            logger.warning(
-                "Falha na IA (modelo=%s, search=%s): %s %s",
-                model, use_search, type(exc).__name__, getattr(exc, "code", ""),
-            )
-            # Chave inválida: trocar de modelo não resolve.
+            logger.warning("Falha na IA (modelo=%s, search=%s, %.1fs): %s",
+                           model, use_search, time.monotonic() - started, _describe(exc))
             if translated.status_code == 401:
                 raise translated
-            # Cota esgotada sem Search: o próximo passo também falharia.
-            # (Com Search pode ser só a cota da busca, então tentamos sem ela.)
-            if translated.status_code == 429 and not use_search:
-                raise translated
-            continue
+            # Erro com busca costuma ser só a cota da busca: não deve virar a mensagem final.
+            (search_errors if use_search else errors_seen).append(translated)
+            return None
 
-    raise _translate_error(last_error) if last_error else AIError(502, "Falha desconhecida na IA.")
+    if config.GEMINI_USE_SEARCH:
+        result = attempt(config.GEMINI_MODEL, True)
+        if result:
+            return result
+
+    result = attempt(config.GEMINI_MODEL, False)
+    if result:
+        return result
+
+    for model in _fallback_models(client):
+        result = attempt(model, False)
+        if result:
+            logger.info("IA respondeu com o modelo reserva %s para %s", model, vuln.cve_id)
+            return result
+
+    # Mensagem mais útil para o usuário: sobrecarga > cota > tempo esgotado > o resto.
+    final = errors_seen or search_errors
+    for code in (503, 429, 504):
+        for err in final:
+            if err.status_code == code:
+                raise err
+    raise final[-1] if final else AIError(502, "Falha desconhecida na IA.")

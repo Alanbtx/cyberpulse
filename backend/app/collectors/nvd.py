@@ -1,5 +1,7 @@
 import logging
 import re
+import threading
+import time
 from datetime import datetime
 
 import httpx
@@ -76,10 +78,40 @@ def _published(cve_item: dict):
         return None
 
 
+# Estado da chave e controle de ritmo (o NVD bloqueia quem passa do limite).
+_key_rejected = False
+_rate_lock = threading.Lock()
+_last_request = 0.0
+
+
+def key_active() -> bool:
+    return bool(config.NVD_API_KEY) and not _key_rejected
+
+
+def _throttle():
+    """Sem chave: 5 req/30s. Com chave: 50 req/30s. Espera o necessário antes de chamar."""
+    global _last_request
+    interval = 0.7 if key_active() else 6.5
+    with _rate_lock:
+        wait = _last_request + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_request = time.monotonic()
+
+
 def _fetch_nvd(cve_id: str) -> dict | None:
-    headers = {"apiKey": config.NVD_API_KEY} if config.NVD_API_KEY else {}
-    with httpx.Client(timeout=30.0, headers=headers) as client:
-        response = client.get(NVD_BASE_URL, params={"cveId": cve_id})
+    global _key_rejected
+    with httpx.Client(timeout=30.0) as client:
+        _throttle()
+        headers = {"apiKey": config.NVD_API_KEY} if key_active() else {}
+        response = client.get(NVD_BASE_URL, params={"cveId": cve_id}, headers=headers)
+        # Chave inválida: o NVD responde 404 com o cabeçalho "message: Invalid apiKey."
+        if headers and response.status_code == 404 and "apikey" in response.headers.get("message", "").lower():
+            _key_rejected = True
+            logger.error("NVD_API_KEY recusada pelo NVD (Invalid apiKey). Seguindo SEM chave (mais lento). "
+                         "Corrija a variável NVD_API_KEY no Render.")
+            _throttle()
+            response = client.get(NVD_BASE_URL, params={"cveId": cve_id})
         response.raise_for_status()
         items = response.json().get("vulnerabilities", [])
     return items[0].get("cve", {}) if items else None
@@ -93,13 +125,14 @@ def enrich_cve_with_nvd(db: Session, cve_id: str):
 
     try:
         cve_item = _fetch_nvd(cve_id)
-    except httpx.HTTPStatusError as e:
-        logger.warning("NVD respondeu %s para %s", e.response.status_code, cve_id)
-        # 403/429/5xx = limite ou instabilidade: não marca como verificado, tenta depois.
-        return {"status": "error", "detail": f"NVD HTTP {e.response.status_code}"}
     except httpx.HTTPError as e:
-        logger.warning("Falha de rede no NVD para %s: %s", cve_id, type(e).__name__)
-        return {"status": "error", "detail": "falha de rede"}
+        status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else type(e).__name__
+        logger.warning("Falha no NVD para %s: %s", cve_id, status)
+        # Marca a tentativa mesmo com erro: sem isso o job ficaria repetindo a mesma CVE
+        # para sempre. CVEs sem CVSS são verificadas de novo depois de 1 dia.
+        db_vuln.nvd_checked_at = datetime.utcnow()
+        db.commit()
+        return {"status": "error", "detail": f"NVD {status}"}
 
     # Marca como verificado mesmo sem CVSS, para o job não ficar preso no mesmo CVE.
     db_vuln.nvd_checked_at = datetime.utcnow()
