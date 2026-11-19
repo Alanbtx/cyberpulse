@@ -12,7 +12,7 @@ O CyberPulse segue uma arquitetura baseada em serviços para facilitar o desenvo
 * **Tecnologias:** Python, FastAPI.
 * **Objetivo:** Servir os dados ao Frontend através de uma API RESTful. No futuro, ele também englobará módulos para:
   * **Collectors:** Módulos autônomos que buscam dados nas fontes (CISA, NVD, etc.).
-  * **Engine de Análise:** Classificação, deduplicação e pontuação de vulnerabilidades.
+  * **Engine de Análise:** pontuação de risco (CVSS + EPSS + KEV + ransomware + urgência) em `app/scoring.py`.
   * **Alertas:** Gerenciamento de inscrições de e-mail e disparos.
 
 ### 3. Banco de Dados

@@ -17,20 +17,30 @@ O projeto já está hospedado e funcionando 24/7 na nuvem. Você pode testar tod
 
 Para ter a experiência completa de um Analista de Cibersegurança, siga os passos abaixo no site ao vivo:
 
-### 1. Configure a Inteligência Artificial (Gratuito e Seguro)
-A IA do sistema traduz jargões técnicos para uma linguagem clara e diz como corrigir a falha. Por questões de segurança (Zero-Trust), o sistema não guarda a chave de ninguém.
-- Acesse o [Google AI Studio](https://aistudio.google.com/app/apikey) e gere uma **API Key Gratuita**.
-- No CyberPulse, clique em qualquer ameaça na tabela para abrir o Terminal de Detalhes.
-- Cole sua chave no quadro da Inteligência Artificial e clique em **SALVAR**. Sua chave fica segura apenas no seu navegador e não vai para o nosso banco de dados.
+### 1. Configure a Inteligência Artificial (Gratuito)
+A IA traduz jargões técnicos para uma linguagem clara e diz como corrigir a falha.
+- Acesse o [Google AI Studio](https://aistudio.google.com/app/apikey) e gere uma **API Key gratuita**.
+- No CyberPulse, clique em qualquer ameaça para abrir o Terminal de Detalhes, cole a chave e clique em **SALVAR**.
+- Por padrão a chave fica **só nesta aba** (sessionStorage). Marque *Lembrar neste navegador* para mantê-la.
+- A chave é enviada ao backend apenas para repassar a chamada ao Gemini: **não é gravada no banco nem em logs**.
+- Análises já geradas ficam salvas e aparecem para qualquer pessoa, **mesmo sem chave**. A IA cita as fontes consultadas.
 
 ### 2. Drible o "Delay" do Governo Americano (Busca Real-Time)
-**Você sabia?** A base de dados oficial da CISA (governo americano) demora até 24 horas para atualizar seus arquivos de API por conta do gigantesco cache global dos servidores deles. 
-- **O Teste:** Se você viu uma falha que saiu hoje no site oficial da CISA e ela ainda não apareceu na nossa tabela, não espere!
-- **A Solução:** Copie o código da falha (ex: `CVE-2024-3094`), cole na barra de busca superior do CyberPulse e aperte `[ BUSCAR ]`.
-- O nosso sistema fará uma interceptação *em tempo real* no banco de dados raiz (NVD), trará os dados brutos instantaneamente e permitirá que você mande a IA analisá-los antes mesmo do governo atualizar a lista pública!
+A base KEV da CISA pode levar horas para atualizar. Se uma CVE ainda não aparece na tabela, pesquise o código
+(ex: `CVE-2024-3094`) e aperte `[ BUSCAR ]`: o sistema busca na hora no NVD e a adiciona ao banco.
 
 ### 3. Entenda o "Risk Score (CyberPulse)"
-Ao contrário de sites comuns que apenas listam o score CVSS básico, o CyberPulse possui um **Motor de Risco Customizado**. Se a CISA emitir um alerta de que a falha está sendo explorada ativamente por hackers, nosso robô detecta, penaliza a vulnerabilidade e **multiplica a nota de risco (chegando a quase 10.0)**, jogando a ameaça para o topo da sua tabela de prioridades.
+A nota (0 a 10) combina sinais que realmente diferenciam as ameaças, e é recalculada a cada 30 minutos:
+
+| Componente | Peso | Fonte |
+|---|---|---|
+| Severidade (CVSS v4.0 / v3.x / v2) | 35% | NVD |
+| Probabilidade de exploração em 30 dias (EPSS) | 25% | FIRST.org |
+| Exploração ativa confirmada | 15% | CISA KEV |
+| Uso em campanhas de ransomware | 10% | CISA KEV |
+| Urgência: recência (meia-vida de 60 dias) ou prazo CISA vencendo | 15% | CISA / NVD |
+
+O detalhamento de cada CVE aparece no modal e em `GET /api/v1/vulnerabilities/{cve}/score`.
 
 ---
 
@@ -44,19 +54,61 @@ Ao contrário de sites comuns que apenas listam o score CVSS básico, o CyberPul
 
 ## 🛠️ Arquitetura Técnica (Para Desenvolvedores)
 
-- **Backend:** FastAPI (Python), SQLAlchemy, PostgreSQL, APScheduler (Rotinas Automáticas a cada 6h).
+- **Backend:** FastAPI (Python), SQLAlchemy, PostgreSQL, APScheduler + cron do GitHub Actions.
 - **Frontend:** React, TypeScript, TailwindCSS.
-- **Inteligência Artificial:** Google Gemini (`gemini-3.5-flash`).
+- **Inteligência Artificial:** Google Gemini via SDK `google-genai` (modelo configurável por `GEMINI_MODEL`), com Google Search, timeout, novas tentativas e cache.
 - **Deploy Cloud:** Vercel (Frontend) e Render (Backend/Robôs).
 
 ### Rodando Localmente com Docker
 Se você quiser clonar e rodar o projeto na sua máquina para estudar o código:
 ```bash
 # Clone o repositório
-git clone https://github.com/SEU-USUARIO/cyberpulse.git
+git clone https://github.com/Alanbtx/cyberpulse.git
 cd cyberpulse
 
 # Suba todos os containers (Banco de Dados, Backend e Frontend)
 docker compose up -d --build
 ```
 Após compilar, acesse `http://localhost:5173`. O backend já começará a varrer a internet populando seu banco de dados local através do agendador automático (APScheduler).
+
+### Testes
+```bash
+cd backend && pip install -r requirements-dev.txt && pytest -q
+cd frontend && npm ci && npm run typecheck && npm run build
+```
+
+## ⚙️ Configuração de Deploy
+
+### Render (backend)
+Variáveis de ambiente (modelo completo em [`.env.example`](./.env.example)):
+
+| Variável | Obrigatória | Descrição |
+|---|---|---|
+| `DATABASE_URL` | sim | Postgres |
+| `CORS_ORIGINS` | recomendada | Padrão: `https://cyberpulse-ochre.vercel.app,http://localhost:5173` |
+| `ADMIN_TOKEN` | para o cron | Token longo e aleatório. Sem ele, as rotas `/api/v1/admin/*` ficam desligadas |
+| `NVD_API_KEY` | opcional | [Chave gratuita](https://nvd.nist.gov/developers/request-an-api-key): 10x mais rápido para preencher CVSS |
+| `GEMINI_MODEL` / `GEMINI_FALLBACK_MODEL` | opcional | Troca de modelo sem precisar de deploy |
+
+Comando de start (se não usar o Dockerfile):
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+```
+
+### Vercel (frontend)
+- `VITE_API_URL` = URL do backend no Render.
+- O arquivo [`frontend/vercel.json`](./frontend/vercel.json) aplica CSP e cabeçalhos de segurança (o *Root Directory* do projeto na Vercel deve ser `frontend`).
+  Se a URL do backend mudar, atualize também o `connect-src` da CSP.
+
+### GitHub Actions
+- **CI**: testes, typecheck, build e auditoria de dependências em todo PR.
+- **Atualizar dados**: a cada 6h acorda a API (o plano gratuito do Render hiberna) e dispara a coleta.
+  Configure os secrets `API_URL` e `ADMIN_TOKEN` em *Settings → Secrets and variables → Actions*.
+- **Dependabot**: PRs semanais de atualização de dependências.
+
+## 🔒 Segurança
+- Sem rotas públicas que disparem coletas: elas exigem `X-Admin-Token`.
+- Limite de requisições por IP na IA e na busca em tempo real; `limit` máximo de 200 por página.
+- CORS restrito, `/docs` desligado em produção, erros sem detalhes internos.
+- Uma conexão com o Gemini por requisição: a chave de um usuário nunca é usada no pedido de outro.
+- Container sem root e sem `--reload`; Postgres local exposto só em `127.0.0.1`.
