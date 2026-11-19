@@ -20,14 +20,14 @@ export default function Pagination({ page, pages, pageSize, total, disabled, onP
   return (
     <nav className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3" aria-label="Paginação">
       <div className="text-[10px] tracking-widest text-emerald-700 uppercase">
-        EXIBINDO {from}–{to} DE {total}
+        MOSTRANDO {from}–{to} DE {total}
       </div>
 
       <div className="flex items-center gap-2">
         <button type="button" className={btn} disabled={disabled || page <= 1} onClick={() => onPage(1)} aria-label="Primeira página">«</button>
         <button type="button" className={btn} disabled={disabled || page <= 1} onClick={() => onPage(page - 1)}>&lt; ANTERIOR</button>
         <span className="text-[10px] tracking-widest text-emerald-400 px-2 whitespace-nowrap">
-          PÁG {page} / {pages}
+          PÁGINA {page} DE {pages}
         </span>
         <button type="button" className={btn} disabled={disabled || page >= pages} onClick={() => onPage(page + 1)}>PRÓXIMA &gt;</button>
         <button type="button" className={btn} disabled={disabled || page >= pages} onClick={() => onPage(pages)} aria-label="Última página">»</button>

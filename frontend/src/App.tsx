@@ -48,12 +48,19 @@ interface ScoreComponent {
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const KEY_STORAGE = 'cyberpulse_gemini_key';
 
+// 0.99996 -> ">99,9%", 0.0123 -> "1,2%"
+function formatPercent(p: number): string {
+  if (p >= 0.9995) return '>99,9%';
+  if (p > 0 && p < 0.0005) return '<0,1%';
+  return `${(p * 100).toFixed(1).replace('.', ',')}%`;
+}
+
 const SCORE_LABELS: Record<string, string> = {
   cvss: 'SEVERIDADE (CVSS)',
-  epss: 'PROB. EXPLORAÇÃO (EPSS)',
-  kev: 'EXPLORADA ATIVAMENTE (CISA)',
+  epss: 'CHANCE DE ATAQUE (EPSS)',
+  kev: 'EXPLORAÇÃO CONFIRMADA (CISA)',
   ransomware: 'USADA POR RANSOMWARE',
-  urgency: 'URGÊNCIA / RECÊNCIA',
+  urgency: 'URGÊNCIA (PRAZO / NOVIDADE)',
 };
 
 // Lê a mensagem de erro da API mesmo quando a resposta não é JSON (ex: 502 do proxy do Render).
@@ -235,7 +242,7 @@ function App() {
   };
 
   const getSeverityBadge = (severity: string | null) => {
-    if (!severity) return <span className="text-zinc-500 animate-pulse">[ ANALISANDO... ]</span>;
+    if (!severity) return <span className="text-zinc-500" title="O NVD ainda não publicou a nota CVSS desta falha">[ AGUARDANDO NOTA ]</span>;
     const s = severity.toUpperCase();
     if (s === 'CRITICAL' || s === 'CRÍTICO') return <span className="text-red-500 font-bold border border-red-500/50 bg-red-950/30 px-2 py-0.5 shadow-[0_0_8px_rgba(239,68,68,0.3)]">[ CRÍTICO ]</span>;
     if (s === 'HIGH' || s === 'ALTO') return <span className="text-orange-500 font-bold border border-orange-500/50 bg-orange-950/30 px-2 py-0.5 shadow-[0_0_8px_rgba(249,115,22,0.3)]">[ ALTO ]</span>;
@@ -501,7 +508,7 @@ function App() {
                   <span className="font-bold text-2xl tracking-widest text-emerald-400 uppercase drop-shadow-[0_0_8px_rgba(16,185,129,0.8)]">
                     CyberPulse
                   </span>
-                  <span className="text-[10px] text-emerald-600 tracking-[0.2em] uppercase">Terminal de Inteligência de Ameaças v1.0</span>
+                  <span className="hidden sm:block text-[10px] text-emerald-600 tracking-[0.2em] uppercase">Terminal de Inteligência de Ameaças v1.0</span>
                 </div>
               </div>
             </div>
@@ -539,7 +546,7 @@ function App() {
 
                   {/* Busca Hacker */}
                   <form onSubmit={handleSearch} className="flex w-full sm:w-auto">
-                    <div className="flex items-center border border-emerald-800 bg-black px-3 py-1">
+                    <div className="flex items-center w-full border border-emerald-800 bg-black px-3 py-1">
                       <span className="text-emerald-600 mr-2">&gt;_</span>
                       <input
                         type="text"
@@ -548,9 +555,9 @@ function App() {
                         aria-label="Pesquisar CVE ou sistema"
                         onChange={(e) => setSearchInput(e.target.value)}
                         placeholder="PESQUISAR_CVE_OU_SISTEMA..."
-                        className="bg-transparent border-none text-emerald-400 focus:outline-none uppercase text-xs tracking-widest placeholder-emerald-900/70 w-full sm:w-64"
+                        className="bg-transparent border-none text-emerald-400 focus:outline-none uppercase text-xs tracking-widest placeholder-emerald-900/70 flex-1 min-w-0 sm:w-64"
                       />
-                      <button type="submit" className="text-emerald-500 font-bold ml-2 hover:text-white transition-colors text-xs uppercase tracking-widest">
+                      <button type="submit" className="text-emerald-500 font-bold ml-2 hover:text-white transition-colors text-xs uppercase tracking-widest whitespace-nowrap">
                         [ BUSCAR ]
                       </button>
                     </div>
@@ -563,9 +570,9 @@ function App() {
                   {refreshing
                     ? '[ CONSULTANDO BASE DE AMEAÇAS... ]'
                     : filters.q
-                      ? `[ BUSCA CONCLUÍDA: ${total} AMEAÇAS PARA "${filters.q}" ]`
+                      ? `[ ${total} RESULTADOS PARA "${filters.q}" ]`
                       : hasActiveFilters(filters)
-                        ? `[ ${total} AMEAÇAS CORRESPONDEM AOS FILTROS ]`
+                        ? `[ ${total} AMEAÇAS COM ESSES FILTROS ]`
                         : `[ ${total} AMEAÇAS MONITORADAS ]`}
                   {error && <span className="text-red-500 ml-2">[ ERRO: {error} ]</span>}
                 </div>
@@ -575,11 +582,11 @@ function App() {
                     <table className="min-w-full divide-y divide-emerald-900/30">
                       <thead className="bg-emerald-950/20">
                         <tr>
-                          <th className="py-4 pl-4 pr-3 text-left text-[11px] uppercase tracking-widest text-emerald-600 sm:pl-6">RISK SCORE (CYBERPULSE)</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">ID DA AMEAÇA</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">DESCRIÇÃO (ALVO)</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">NÍVEL CVSS</th>
-                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">AÇÃO</th>
+                          <th className="py-4 pl-4 pr-3 text-left text-[11px] uppercase tracking-widest text-emerald-600 sm:pl-6">NOTA DE RISCO</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">CVE</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">VULNERABILIDADE</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600">SEVERIDADE (CVSS)</th>
+                          <th className="px-3 py-4 text-left text-[11px] uppercase tracking-widest text-emerald-600"><span className="sr-only">Ações</span></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-emerald-900/20 bg-transparent">
@@ -607,12 +614,11 @@ function App() {
                               </td>
                               <td className="py-4 px-3 text-sm">
                                 <div className="font-medium text-zinc-300 max-w-sm truncate uppercase group-hover:text-white" title={vuln.title}>{vuln.title}</div>
-                                <div className="text-[10px] text-zinc-500 mt-1 tracking-widest flex items-center gap-2">
-                                  <span>ALVO: {vuln.vendor} {vuln.product}</span>
-                                  <span className="text-zinc-700">|</span>
-                                  <span className="text-emerald-600">CISA: {vuln.cisa_date_added ? formatDate(vuln.cisa_date_added) : 'N/A'}</span>
-                                  {vuln.ransomware_use && <span className="text-red-500 font-bold">RANSOMWARE</span>}
-                                  {vuln.epss_score != null && <span className="text-zinc-400">EPSS {(vuln.epss_score * 100).toFixed(1)}%</span>}
+                                <div className="text-[10px] text-zinc-500 mt-1 tracking-widest flex flex-wrap items-center gap-x-3 gap-y-0.5 [&>span]:whitespace-nowrap">
+                                  <span>{vuln.vendor} {vuln.product}</span>
+                                  <span className="text-emerald-600" title="Data em que a CISA confirmou a exploração ativa">NA CISA DESDE {vuln.cisa_date_added ? formatDate(vuln.cisa_date_added) : 'N/D'}</span>
+                                  {vuln.ransomware_use && <span className="text-red-500 font-bold">USADA POR RANSOMWARE</span>}
+                                  {vuln.epss_score != null && <span className="text-zinc-400" title="EPSS (FIRST.org): probabilidade de exploração nos próximos 30 dias">CHANCE DE ATAQUE {formatPercent(vuln.epss_score)}</span>}
                                 </div>
                               </td>
                               <td className="whitespace-nowrap py-4 px-3 text-xs">
@@ -680,7 +686,7 @@ function App() {
                     <span><strong className="text-emerald-600">PRODUTO:</strong> {selectedVuln.product || 'DESCONHECIDO'}</span>
                     <span><strong className="text-emerald-600">CVSS:</strong> {selectedVuln.cvss_score || 'PENDENTE'}</span>
                     {selectedVuln.epss_score != null && (
-                      <span><strong className="text-emerald-600">EPSS:</strong> {(selectedVuln.epss_score * 100).toFixed(1)}% (PERCENTIL {Math.round((selectedVuln.epss_percentile ?? 0) * 100)})</span>
+                      <span><strong className="text-emerald-600">EPSS:</strong> {formatPercent(selectedVuln.epss_score)} (PERCENTIL {Math.round((selectedVuln.epss_percentile ?? 0) * 100)})</span>
                     )}
                     {selectedVuln.ransomware_use && <span className="text-red-500 font-bold">USADA EM CAMPANHAS DE RANSOMWARE</span>}
                   </div>

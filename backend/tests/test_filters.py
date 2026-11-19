@@ -94,7 +94,8 @@ def test_combined_filters(client):
 def test_sorts(client):
     assert ids(client.get("/api/v1/vulnerabilities/search?sort=epss&page_size=3")) == ["CVE-2024-0001", "CVE-2024-0003", "CVE-2024-0002"]
     assert ids(client.get("/api/v1/vulnerabilities/search?sort=recent&page_size=1")) == ["CVE-2024-0001"]
-    assert ids(client.get("/api/v1/vulnerabilities/search?sort=due&page_size=1")) == ["CVE-2024-0002"]
+    # Próximo prazo primeiro (+5 dias), depois +30; vencidos depois.
+    assert ids(client.get("/api/v1/vulnerabilities/search?sort=due&page_size=3")) == ["CVE-2024-0001", "CVE-2024-0003", "CVE-2024-0002"]
     assert client.get("/api/v1/vulnerabilities/search?sort=drop_table").status_code == 422
 
 

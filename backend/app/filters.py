@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Literal
 
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Query, Session
 
 from app.models import Vulnerability
@@ -88,7 +88,12 @@ def build_query(db: Session, f: VulnFilters, today: date | None = None) -> Query
     order = {
         "recent": (Vulnerability.cisa_date_added.desc().nulls_last(),),
         "epss": (Vulnerability.epss_score.desc().nulls_last(),),
-        "due": (Vulnerability.cisa_due_date.asc().nulls_last(),),
+        # Próximos prazos primeiro; vencidos depois (do mais recente ao mais antigo); sem prazo no fim.
+        "due": (
+            case((Vulnerability.cisa_due_date.is_(None), 2), (Vulnerability.cisa_due_date < today, 1), else_=0),
+            case((Vulnerability.cisa_due_date >= today, Vulnerability.cisa_due_date)).asc(),
+            Vulnerability.cisa_due_date.desc(),
+        ),
         "score": (Vulnerability.custom_risk_score.desc().nulls_last(),),
     }[f.sort]
     # Desempate estável: sem ele a mesma CVE pode aparecer em duas páginas.
