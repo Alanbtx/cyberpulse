@@ -69,7 +69,7 @@ app.add_middleware(
     allow_origin_regex=config.CORS_ORIGIN_REGEX,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-Gemini-Key"],
+    allow_headers=["Content-Type", "X-Gemini-Key", "X-OpenRouter-Key"],
     max_age=600,
 )
 
@@ -211,7 +211,7 @@ def list_advisories(
     return result
 
 
-def _analysis_payload(vuln: Vulnerability, cached: bool) -> dict:
+def _analysis_payload(vuln: Vulnerability, cached: bool, warning: str | None = None) -> dict:
     try:
         sources = json.loads(vuln.ai_analysis_sources or "[]")
     except ValueError:
@@ -223,6 +223,8 @@ def _analysis_payload(vuln: Vulnerability, cached: bool) -> dict:
         "generated_at": vuln.ai_analysis_at,
         "cached": cached,
         "sources": sources,
+        # Preenchido quando a IA falhou e devolvemos a última análise salva.
+        "warning": warning,
     }
 
 
@@ -241,9 +243,14 @@ def analyze_vulnerability_with_ai(
     cve_id: str = CveId,
     force: bool = False,
     x_gemini_key: str | None = Header(None, max_length=200),
+    x_openrouter_key: str | None = Header(None, max_length=200),
     db: Session = Depends(get_db),
 ):
-    """Gera (ou reaproveita) a análise da IA usando a chave do próprio usuário."""
+    """Gera (ou reaproveita) a análise da IA usando a(s) chave(s) do próprio usuário.
+
+    Ordem: Gemini -> OpenRouter (reserva). Se as duas falharem e existir uma análise
+    salva, devolve a salva com um aviso em vez de erro.
+    """
     vuln = db.query(Vulnerability).filter(Vulnerability.cve_id == cve_id).first()
     if not vuln:
         raise HTTPException(status_code=404, detail="Vulnerabilidade não encontrada")
@@ -252,14 +259,17 @@ def analyze_vulnerability_with_ai(
     if vuln.ai_analysis and not force and datetime.utcnow() < fresh_until:
         return _analysis_payload(vuln, cached=True)
 
-    key = (x_gemini_key or "").strip()
-    if not key:
-        raise HTTPException(status_code=401, detail="CHAVE_API_NAO_FORNECIDA: informe sua chave do Gemini para gerar a análise.")
+    gemini_key = (x_gemini_key or "").strip()
+    openrouter_key = (x_openrouter_key or "").strip()
+    if not gemini_key and not openrouter_key:
+        raise HTTPException(status_code=401, detail="CHAVE_API_NAO_FORNECIDA: informe a chave do Gemini ou do OpenRouter para gerar a análise.")
 
     ai_limiter.check(request)
     try:
-        result = ai.analyze(vuln, key)
+        result = ai.analyze(vuln, gemini_key or None, openrouter_key or None)
     except ai.AIError as e:
+        if vuln.ai_analysis and e.status_code != 401:
+            return _analysis_payload(vuln, cached=True, warning=f"A IA não respondeu agora ({e.message}). Mostrando a última análise salva.")
         raise HTTPException(status_code=e.status_code, detail=e.message)
 
     vuln.ai_analysis = result.text

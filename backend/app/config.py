@@ -34,6 +34,11 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "")
 GEMINI_USE_SEARCH = _bool("GEMINI_USE_SEARCH", True)
 GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
+# OpenRouter (reserva, chave do usuário) — SOMENTE modelos gratuitos. Lista em ordem de
+# preferência; IDs pagos são ignorados e o roteador "openrouter/free" sempre fecha a lista.
+OPENROUTER_MODELS = _list("OPENROUTER_MODELS", "nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free")
+OPENROUTER_APP_URL = os.getenv("OPENROUTER_APP_URL", "https://cyberpulse-ochre.vercel.app")
+
 # Por quanto tempo uma análise salva é reaproveitada antes de ser gerada de novo.
 AI_CACHE_DAYS = int(os.getenv("AI_CACHE_DAYS", "14"))
 
