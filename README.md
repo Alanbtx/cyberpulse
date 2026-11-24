@@ -17,13 +17,21 @@ O projeto já está hospedado e funcionando 24/7 na nuvem. Você pode testar tod
 
 Para ter a experiência completa de um Analista de Cibersegurança, siga os passos abaixo no site ao vivo:
 
-### 1. Configure a Inteligência Artificial (Gratuito)
-A IA traduz jargões técnicos para uma linguagem clara e diz como corrigir a falha.
-- Acesse o [Google AI Studio](https://aistudio.google.com/app/apikey) e gere uma **API Key gratuita**.
-- No CyberPulse, clique em qualquer ameaça para abrir o Terminal de Detalhes, cole a chave e clique em **SALVAR**.
-- Por padrão a chave fica **só nesta aba** (sessionStorage). Marque *Lembrar neste navegador* para mantê-la.
-- A chave é enviada ao backend apenas para repassar a chamada ao Gemini: **não é gravada no banco nem em logs**.
-- Análises já geradas ficam salvas e aparecem para qualquer pessoa, **mesmo sem chave**. A IA cita as fontes consultadas.
+### 1. Configure a Inteligência Artificial
+A IA traduz jargões técnicos para uma linguagem clara e diz como corrigir a falha. Clique em qualquer ameaça e,
+no quadro da IA, cole uma ou as duas chaves:
+
+| Chave | Custo | Para quê |
+|---|---|---|
+| **Google Gemini** ([gerar chave grátis](https://aistudio.google.com/app/apikey)) | Gratuito | IA principal |
+| **OpenRouter** ([gerar chave](https://openrouter.ai/settings/keys) · [créditos](https://openrouter.ai/settings/credits)) | Pago por uso (centavos por análise) | **Reserva:** assume na hora quando o Gemini está sobrecarregado |
+
+- Com as duas chaves, se o Gemini falhar, o OpenRouter responde com modelos do mesmo nível (primeiro o mesmo
+  Gemini servido pelo OpenRouter, depois Claude Sonnet), com busca na web e fontes citadas.
+- Se as duas IAs falharem e já existir uma análise salva, ela é mostrada com um aviso, em vez de erro.
+- As chaves ficam **só no seu navegador** (nesta aba, ou com *Lembrar neste navegador*) e são repassadas ao backend
+  apenas para chamar a IA: **não são gravadas no banco nem em logs**.
+- Análises já geradas ficam salvas e aparecem para qualquer pessoa, **mesmo sem chave**.
 
 ### 2. Drible o "Delay" do Governo Americano (Busca Real-Time)
 A base KEV da CISA pode levar horas para atualizar. Se uma CVE ainda não aparece na tabela, pesquise o código
@@ -56,7 +64,7 @@ O detalhamento de cada CVE aparece no modal e em `GET /api/v1/vulnerabilities/{c
 
 - **Backend:** FastAPI (Python), SQLAlchemy, PostgreSQL, APScheduler + cron do GitHub Actions.
 - **Frontend:** React, TypeScript, TailwindCSS.
-- **Inteligência Artificial:** Google Gemini via SDK `google-genai` (modelo configurável por `GEMINI_MODEL`), com Google Search, timeout, novas tentativas e cache.
+- **Inteligência Artificial:** Google Gemini (SDK `google-genai`) com reserva no OpenRouter, busca na web, modelos reserva automáticos e cache.
 - **Deploy Cloud:** Vercel (Frontend) e Render (Backend/Robôs).
 
 ### Rodando Localmente com Docker
@@ -89,6 +97,8 @@ Variáveis de ambiente (modelo completo em [`.env.example`](./.env.example)):
 | `ADMIN_TOKEN` | para o cron | Token longo e aleatório. Sem ele, as rotas `/api/v1/admin/*` ficam desligadas |
 | `NVD_API_KEY` | opcional | [Chave gratuita](https://nvd.nist.gov/developers/request-an-api-key): 10x mais rápido para preencher CVSS |
 | `GEMINI_MODEL` / `GEMINI_FALLBACK_MODEL` | opcional | Troca de modelo sem precisar de deploy |
+| `OPENROUTER_MODELS` | opcional | Modelos da reserva, em ordem. Padrão: `google/gemini-3.5-flash,anthropic/claude-sonnet-5.5` |
+| `OPENROUTER_FREE_FALLBACK` | opcional | `true` para usar modelos gratuitos como último recurso (qualidade menor). Padrão: `false` |
 
 Comando de start (se não usar o Dockerfile):
 ```bash

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from google import genai
 from google.genai import errors, types
 
-from app import config
+from app import config, openrouter
 from app.models import Vulnerability
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ class AIResult:
     text: str
     model: str
     sources: list[dict] = field(default_factory=list)
+    provider: str = "gemini"
 
 
 def _clean(value: str | None, limit: int = 4000) -> str:
@@ -127,13 +128,13 @@ def _version(name: str) -> float:
 
 
 def pick_fallback_models(names: list[str], primary: str, limit: int = 2) -> list[str]:
-    """Escolhe modelos "flash" estáveis diferentes do principal: mais novos primeiro, "lite" antes."""
+    """Escolhe modelos "flash" estáveis diferentes do principal: mais novos primeiro, completos antes de "lite"."""
     candidates = {
         n for n in names
         if "flash" in n and n != primary and not n.endswith("-latest")
         and not any(bad in n for bad in _EXCLUDE)
     }
-    return sorted(candidates, key=lambda n: (-_version(n), "lite" not in n, n))[:limit]
+    return sorted(candidates, key=lambda n: (-_version(n), "lite" in n, n))[:limit]
 
 
 def _fallback_models(client: genai.Client) -> list[str]:
@@ -215,13 +216,13 @@ def _translate_error(exc: Exception) -> AIError:
     if isinstance(exc, errors.ClientError):
         msg = (getattr(exc, "message", "") or str(exc)).lower()
         if exc.code == 400 and ("api key" in msg or "api_key" in msg):
-            return AIError(401, "CHAVE_INVALIDA: a chave do Gemini foi recusada. Gere uma nova no Google AI Studio.")
+            return AIError(401, "CHAVE_INVALIDA_GEMINI: a chave do Gemini foi recusada. Gere uma nova no Google AI Studio.")
         if exc.code in (401, 403):
-            return AIError(401, "CHAVE_SEM_PERMISSAO: a chave do Gemini não tem acesso a este modelo.")
+            return AIError(401, "CHAVE_SEM_PERMISSAO_GEMINI: a chave do Gemini não tem acesso a este modelo.")
         if exc.code == 429:
             wait = _retry_after_seconds(exc)
             when = f"Tente de novo em cerca de {wait} segundos." if wait else "Aguarde alguns minutos e tente de novo."
-            return AIError(429, f"COTA_ESGOTADA: o limite gratuito da sua chave do Gemini foi atingido. {when}")
+            return AIError(429, f"COTA_ESGOTADA_GEMINI: o limite gratuito da sua chave do Gemini foi atingido. {when}")
         if exc.code == 404:
             return AIError(502, "MODELO_INDISPONIVEL: o modelo de IA configurado não está disponível para a sua chave.")
         return AIError(502, "A IA recusou a requisição. Tente novamente em instantes.")
@@ -248,7 +249,75 @@ def _generate(client: genai.Client, vuln: Vulnerability, prompt: str, model: str
     return AIResult(text=text, model=model, sources=_extract_sources(response) if use_search else [])
 
 
-def analyze(vuln: Vulnerability, api_key: str) -> AIResult:
+def _translate_openrouter(exc: openrouter.OpenRouterError) -> AIError:
+    if exc.status == 401:
+        return AIError(401, "CHAVE_INVALIDA_OPENROUTER: a chave do OpenRouter foi recusada. Gere uma nova em openrouter.ai/settings/keys.")
+    if exc.status == 402:
+        return AIError(402, "SEM_CREDITOS_OPENROUTER: sua conta do OpenRouter está sem créditos. Adicione em openrouter.ai/settings/credits.")
+    if exc.status == 429:
+        when = f"Tente de novo em cerca de {exc.retry_after} segundos." if exc.retry_after else "Aguarde um minuto e tente de novo."
+        return AIError(429, f"COTA_ESGOTADA_OPENROUTER: limite de requisições do OpenRouter atingido. {when}")
+    if exc.status == 403:
+        return AIError(502, "O OpenRouter bloqueou a requisição (moderação ou limite da chave).")
+    if exc.status == 504:
+        return AIError(504, "TEMPO_ESGOTADO: o OpenRouter demorou demais para responder. Tente novamente.")
+    return AIError(503, "IA_INDISPONIVEL_OPENROUTER: nenhum modelo do OpenRouter respondeu agora. Tente novamente em instantes.")
+
+
+def _analyze_openrouter(vuln: Vulnerability, prompt: str, api_key: str) -> AIResult:
+    last: openrouter.OpenRouterError | None = None
+    for use_search in (True, False):
+        started = time.monotonic()
+        try:
+            text, model, sources = openrouter.generate(api_key, prompt, use_search=use_search)
+            missing = [s for s in REQUIRED_SECTIONS if s not in text.upper()]
+            if missing:
+                logger.info("Resposta do OpenRouter para %s sem as seções %s", vuln.cve_id, missing)
+            return AIResult(text=text, model=model, sources=sources, provider="openrouter")
+        except openrouter.OpenRouterError as exc:
+            last = exc
+            logger.warning("Falha no OpenRouter (search=%s, %.1fs): %s %s %s", use_search,
+                           time.monotonic() - started, exc.status, exc.error_type, exc.message[:300])
+            # Chave, créditos e cota não melhoram sem a busca.
+            if exc.status in (401, 402, 429):
+                break
+    raise _translate_openrouter(last)  # type: ignore[arg-type]
+
+
+def analyze(vuln: Vulnerability, api_key: str | None = None, openrouter_key: str | None = None) -> AIResult:
+    """Gemini primeiro (chave do usuário) e, se falhar, OpenRouter (se o usuário tiver chave).
+
+    Com chave do OpenRouter, o Gemini não tenta modelos "lite" (qualidade menor): a reserva
+    passa a ser o OpenRouter, que usa modelos do mesmo nível.
+    """
+    if not api_key and not openrouter_key:
+        raise AIError(401, "CHAVE_API_NAO_FORNECIDA: informe a chave do Gemini ou do OpenRouter.")
+    prompt = build_prompt(vuln)
+    failures: list[tuple[str, AIError]] = []
+
+    if api_key:
+        try:
+            return _analyze_gemini(vuln, prompt, api_key, use_fallback_models=not openrouter_key)
+        except AIError as exc:
+            if not openrouter_key:
+                raise
+            logger.info("Gemini falhou para %s (%s); tentando OpenRouter.", vuln.cve_id, exc.status_code)
+            failures.append(("Gemini", exc))
+
+    if openrouter_key:
+        try:
+            return _analyze_openrouter(vuln, prompt, openrouter_key)
+        except AIError as exc:
+            failures.append(("OpenRouter", exc))
+
+    if len(failures) == 1:
+        raise failures[0][1]
+    # Os dois falharam: mostra os dois motivos. Status: o mais "acionável" pelo usuário.
+    status = next((e.status_code for _, e in failures if e.status_code in (401, 402)), failures[-1][1].status_code)
+    raise AIError(status, " | ".join(f"{name}: {e.message}" for name, e in failures))
+
+
+def _analyze_gemini(vuln: Vulnerability, prompt: str, api_key: str, use_fallback_models: bool = True) -> AIResult:
     """Fluxo: principal com busca -> principal sem busca -> modelos reserva sem busca.
 
     - Chave inválida (401) para tudo na hora.
@@ -257,7 +326,6 @@ def analyze(vuln: Vulnerability, api_key: str) -> AIResult:
       (no plano gratuito cada modelo tem cota própria).
     """
     client = _client(api_key)
-    prompt = build_prompt(vuln)
     errors_seen: list[AIError] = []
     search_errors: list[AIError] = []
 
@@ -284,7 +352,7 @@ def analyze(vuln: Vulnerability, api_key: str) -> AIResult:
     if result:
         return result
 
-    for model in _fallback_models(client):
+    for model in (_fallback_models(client) if use_fallback_models else []):
         result = attempt(model, False)
         if result:
             logger.info("IA respondeu com o modelo reserva %s para %s", model, vuln.cve_id)

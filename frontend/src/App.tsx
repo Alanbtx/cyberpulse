@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import FilterBar from './components/FilterBar';
 import Pagination from './components/Pagination';
+import AiKeysPanel from './components/AiKeysPanel';
+import type { AiKeys, Provider } from './aiKeys';
+import { EMPTY_KEYS, PROVIDERS, hasAnyKey, keyHeaders, loadKeys, removeKey, saveKey } from './aiKeys';
 import type { Facets, Filters } from './filters';
 import { DEFAULT_FILTERS, fromUrlParams, hasActiveFilters, toApiParams, toUrlParams } from './filters';
 
@@ -46,7 +49,6 @@ interface ScoreComponent {
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const KEY_STORAGE = 'cyberpulse_gemini_key';
 
 // 0.99996 -> ">99,9%", 0.0123 -> "1,2%"
 function formatPercent(p: number): string {
@@ -77,17 +79,6 @@ async function readError(res: Response): Promise<string> {
   return `FALHA NA REQUISIÇÃO (HTTP ${res.status})`;
 }
 
-function readStoredKey(): { key: string; remember: boolean } {
-  try {
-    const session = sessionStorage.getItem(KEY_STORAGE);
-    if (session) return { key: session, remember: false };
-    const local = localStorage.getItem(KEY_STORAGE);
-    if (local) return { key: local, remember: true };
-  } catch {
-    /* storage bloqueado */
-  }
-  return { key: '', remember: false };
-}
 
 function App() {
   const [vulns, setVulns] = useState<Vulnerability[]>([]);
@@ -106,13 +97,15 @@ function App() {
   const [selectedVuln, setSelectedVuln] = useState<Vulnerability | null>(null);
 
   // API Key State
-  const [apiKey, setApiKey] = useState('');
-  const [isKeySaved, setIsKeySaved] = useState(false);
+  const [aiKeys, setAiKeys] = useState<AiKeys>(EMPTY_KEYS);
   const [rememberKey, setRememberKey] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
+  const [keyProblem, setKeyProblem] = useState<Provider | null>(null);
+  const isKeySaved = hasAnyKey(aiKeys);
 
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiSources, setAiSources] = useState<AiSource[]>([]);
-  const [aiMeta, setAiMeta] = useState<{ cached: boolean; generatedAt: string | null } | null>(null);
+  const [aiMeta, setAiMeta] = useState<{ cached: boolean; generatedAt: string | null; model: string | null; warning: string | null } | null>(null);
   const [scoreBreakdown, setScoreBreakdown] = useState<Record<string, ScoreComponent> | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -174,12 +167,9 @@ function App() {
       .then(data => data && setFacets(data))
       .catch(() => {});
 
-    const stored = readStoredKey();
-    if (stored.key) {
-      setApiKey(stored.key);
-      setRememberKey(stored.remember);
-      setIsKeySaved(true);
-    }
+    const stored = loadKeys();
+    setAiKeys(stored.keys);
+    setRememberKey(stored.remembered);
   }, []);
 
   useEffect(() => {
@@ -210,35 +200,29 @@ function App() {
     updateFilters({ q: searchInput.trim() });
   };
 
-  const saveApiKey = () => {
-    const key = apiKey.trim();
-    if (key.length <= 10) {
-      setAiError('CHAVE MUITO CURTA. COLE A CHAVE COMPLETA DO GOOGLE AI STUDIO.');
-      return;
-    }
-    try {
-      // Por padrão a chave vive só nesta aba (sessionStorage). "Lembrar" grava no localStorage.
-      sessionStorage.removeItem(KEY_STORAGE);
-      localStorage.removeItem(KEY_STORAGE);
-      (rememberKey ? localStorage : sessionStorage).setItem(KEY_STORAGE, key);
-    } catch {
-      /* sem storage: a chave fica só em memória */
-    }
-    setApiKey(key);
+  const saveAiKey = (provider: Provider, key: string): string | null => {
+    if (key.length < 20) return 'Chave incompleta: copie a chave inteira.';
+    if (provider === 'openrouter' && key.startsWith('AIza')) return 'Esta parece uma chave do Gemini. Cole-a no campo do Gemini.';
+    if (provider === 'gemini' && key.startsWith('sk-or-')) return 'Esta parece uma chave do OpenRouter. Cole-a no campo do OpenRouter.';
+    saveKey(provider, key, rememberKey);
+    setAiKeys(prev => ({ ...prev, [provider]: key }));
+    if (keyProblem === provider) setKeyProblem(null);
     setAiError(null);
-    setIsKeySaved(true);
+    return null;
   };
 
-  const removeApiKey = () => {
-    try {
-      sessionStorage.removeItem(KEY_STORAGE);
-      localStorage.removeItem(KEY_STORAGE);
-    } catch {
-      /* ignore */
-    }
-    setApiKey('');
-    setIsKeySaved(false);
-    setAiError(null);
+  const removeAiKey = (provider: Provider) => {
+    removeKey(provider);
+    setAiKeys(prev => ({ ...prev, [provider]: '' }));
+    if (keyProblem === provider) setKeyProblem(null);
+  };
+
+  // Trocar "lembrar" regrava as chaves atuais no armazenamento escolhido.
+  const changeRemember = (remember: boolean) => {
+    setRememberKey(remember);
+    (Object.keys(PROVIDERS) as Provider[]).forEach(p => {
+      if (aiKeys[p]) saveKey(p, aiKeys[p], remember);
+    });
   };
 
   const getSeverityBadge = (severity: string | null) => {
@@ -409,7 +393,7 @@ function App() {
           if (data?.ai_analysis) {
             setAiAnalysis(data.ai_analysis);
             setAiSources(Array.isArray(data.sources) ? data.sources : []);
-            setAiMeta({ cached: true, generatedAt: data.generated_at });
+            setAiMeta({ cached: true, generatedAt: data.generated_at, model: data.model ?? null, warning: null });
           }
         })
         .catch(() => {});
@@ -437,15 +421,18 @@ function App() {
     const url = `${API_BASE_URL}/api/v1/vulnerabilities/${encodeURIComponent(cve_id)}/analyze${force ? '?force=true' : ''}`;
     fetch(url, {
       method: 'POST',
-      headers: {
-        'X-Gemini-Key': apiKey.trim()
-      },
+      headers: keyHeaders(aiKeys),
       signal
     })
       .then(async (res) => {
         if (!res.ok) {
-          if (res.status === 401) setIsKeySaved(false);
-          throw new Error(await readError(res));
+          const message = await readError(res);
+          // Abre o painel de chaves destacando a que deu problema.
+          if (res.status === 401 || res.status === 402) {
+            setKeyProblem(message.includes('OPENROUTER') ? 'openrouter' : message.includes('GEMINI') ? 'gemini' : null);
+            setShowKeys(true);
+          }
+          throw new Error(message);
         }
         return res.json();
       })
@@ -453,7 +440,7 @@ function App() {
         if (!signal.aborted) {
           setAiAnalysis(data.ai_analysis);
           setAiSources(Array.isArray(data.sources) ? data.sources : []);
-          setAiMeta({ cached: Boolean(data.cached), generatedAt: data.generated_at });
+          setAiMeta({ cached: Boolean(data.cached), generatedAt: data.generated_at, model: data.model ?? null, warning: data.warning ?? null });
           setVulns(prev => prev.map(v => (v.cve_id === cve_id ? { ...v, has_ai_analysis: true } : v)));
         }
       })
@@ -756,54 +743,54 @@ function App() {
                             <h3 className="font-bold text-blue-400 flex items-center gap-2 uppercase tracking-wider text-sm">
                               <span className="animate-spin text-lg">⚙</span> MOTOR_DE_ANALISE_IA
                             </h3>
-                            <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest">Executa roteiro de tradução com IA Gemini.</p>
+                            <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-widest">
+                              {aiKeys.gemini && aiKeys.openrouter
+                                ? 'Gemini com reserva automática no OpenRouter.'
+                                : aiKeys.openrouter
+                                  ? 'Usando OpenRouter.'
+                                  : aiKeys.gemini
+                                    ? 'Usando Gemini. Adicione o OpenRouter como reserva para não ficar sem resposta.'
+                                    : 'Cole uma chave abaixo para gerar a explicação desta vulnerabilidade.'}
+                            </p>
                           </div>
 
-                          {isKeySaved ? (
-                            !isAiLoading && (
-                              <div className="flex flex-col items-end gap-2">
-                                <button
-                                  onClick={() => handleAskAI(selectedVuln.cve_id, Boolean(aiAnalysis))}
-                                  className="bg-black border border-blue-500 text-blue-400 hover:bg-blue-500 hover:text-black hover:shadow-[0_0_15px_rgba(59,130,246,0.6)] font-bold py-2 px-4 transition-all text-xs uppercase tracking-widest flex-shrink-0"
-                                >
-                                  {aiAnalysis ? '>_ GERAR_NOVAMENTE.SH' : (aiError ? '>_ TENTAR_NOVAMENTE.SH' : '>_ EXECUTAR_SIMPLIFICACAO.SH')}
-                                </button>
-                                <button onClick={removeApiKey} className="text-[9px] text-zinc-500 hover:text-red-400 uppercase tracking-widest underline">Desconectar Token</button>
-                              </div>
-                            )
-                          ) : (
-                            <div className="flex flex-col gap-2 w-full max-w-xs mt-4 sm:mt-0">
-                              <input
-                                type="password"
-                                value={apiKey}
-                                onChange={(e) => setApiKey(e.target.value)}
-                                placeholder="INSIRA SUA API KEY DO GEMINI..."
-                                className="bg-black border border-blue-800 text-blue-400 p-2 text-xs w-full focus:outline-none focus:border-blue-400"
-                              />
-                              <label className="flex items-center gap-2 text-[9px] text-zinc-500 uppercase tracking-widest cursor-pointer">
-                                <input type="checkbox" checked={rememberKey} onChange={(e) => setRememberKey(e.target.checked)} className="accent-blue-500" />
-                                Lembrar neste navegador
-                              </label>
-                              <div className="flex justify-between items-center">
-                                <a href="https://aistudio.google.com/app/apikey"  target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-600 hover:text-blue-400 uppercase underline">
-                                  Obter Token Gratuito
-                                </a>
-                                <button onClick={saveApiKey} className="text-xs bg-blue-900/50 hover:bg-blue-600 border border-blue-500 text-blue-300 font-bold py-1 px-3 uppercase">
-                                  Salvar
-                                </button>
-                              </div>
+                          {isKeySaved && !isAiLoading && (
+                            <div className="flex flex-col items-end gap-2">
+                              <button
+                                onClick={() => handleAskAI(selectedVuln.cve_id, Boolean(aiAnalysis))}
+                                className="bg-black border border-blue-500 text-blue-400 hover:bg-blue-500 hover:text-black hover:shadow-[0_0_15px_rgba(59,130,246,0.6)] font-bold py-2 px-4 transition-all text-xs uppercase tracking-widest flex-shrink-0"
+                              >
+                                {aiAnalysis ? '>_ GERAR NOVAMENTE' : (aiError ? '>_ TENTAR NOVAMENTE' : '>_ ANALISAR COM IA')}
+                              </button>
+                              <button onClick={() => setShowKeys(v => !v)} className="text-[9px] text-zinc-500 hover:text-blue-300 uppercase tracking-widest underline">
+                                {showKeys ? 'Fechar chaves' : 'Chaves de IA'}
+                              </button>
                             </div>
                           )}
                         </div>
+                        {(!isKeySaved || showKeys) && (
+                          <div className="mt-4">
+                            <AiKeysPanel
+                              keys={aiKeys}
+                              remember={rememberKey}
+                              onRememberChange={changeRemember}
+                              onSave={saveAiKey}
+                              onRemove={removeAiKey}
+                              highlight={keyProblem}
+                            />
+                          </div>
+                        )}
                       </div>
 
                       {/* Área da Resposta (Scrollável) */}
                       <div className="p-5 overflow-y-auto cyber-scrollbar flex-grow">
                         {isAiLoading && (
                           <div className="text-xs text-blue-400 font-mono flex flex-col gap-2">
-                            <div><span className="text-zinc-500">[SISTEMA]</span> Autenticando Token...</div>
-                            <div><span className="text-zinc-500">[SISTEMA]</span> Executando pesquisa online em bases de ameaças...</div>
-                            <div><span className="text-zinc-500">[SISTEMA]</span> Analisando vetores de vulnerabilidade e extraindo KBs...</div>
+                            <div><span className="text-zinc-500">[SISTEMA]</span> Pesquisando fontes oficiais e KBs na web...</div>
+                            <div><span className="text-zinc-500">[SISTEMA]</span> Gerando análise{aiKeys.gemini ? ' com o Gemini' : ' com o OpenRouter'}...</div>
+                            {aiKeys.gemini && aiKeys.openrouter && (
+                              <div><span className="text-zinc-500">[SISTEMA]</span> Se o Gemini não responder, o OpenRouter assume automaticamente.</div>
+                            )}
                             <div className="animate-pulse flex items-center gap-2 mt-2">
                               <div className="w-2 h-4 bg-blue-500 animate-bounce"></div> GERANDO RESPOSTA...
                             </div>
@@ -812,14 +799,29 @@ function App() {
 
                         {aiError && (
                           <div className="text-xs text-red-500 bg-red-950/30 p-3 border border-red-900 font-mono">
-                            [FALHA_CRÍTICA] {aiError}
+                            [FALHA] {aiError}
+                            {!aiKeys.openrouter && (
+                              <div className="mt-2 text-zinc-400">
+                                Dica: adicione uma chave do OpenRouter em "Chaves de IA" para ter uma IA reserva quando o Gemini estiver fora do ar.
+                              </div>
+                            )}
                           </div>
                         )}
 
                         {aiAnalysis && (
                           <div className="text-zinc-300 text-sm leading-relaxed prose prose-invert max-w-none">
+                            {aiMeta?.warning && (
+                              <div className="text-xs text-amber-300 bg-amber-950/30 border border-amber-800 p-3 mb-4">
+                                {aiMeta.warning}
+                              </div>
+                            )}
                             <div className="text-[10px] text-blue-500 mb-4 tracking-widest border-b border-blue-900/50 pb-2">
-                              // SAIDA_IA_SUCESSO
+                              // ANÁLISE DA IA
+                              {aiMeta?.model && (
+                                <span className="text-zinc-500 ml-2" title="Modelo que gerou esta análise">
+                                  [{aiMeta.model}{aiMeta.model.includes('/') ? ' via OpenRouter' : ''}]
+                                </span>
+                              )}
                               {aiMeta?.generatedAt && (
                                 <span className="text-zinc-600 ml-2">
                                   {aiMeta.cached ? '(ANÁLISE SALVA DE ' : '(GERADA EM '}

@@ -34,6 +34,13 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "")
 GEMINI_USE_SEARCH = _bool("GEMINI_USE_SEARCH", True)
 GEMINI_TIMEOUT_SECONDS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
+# OpenRouter (reserva, chave do usuário). Lista em ordem de preferência: começa pelo
+# mesmo modelo do Gemini e segue para outra empresa, para não depender só do Google.
+OPENROUTER_MODELS = _list("OPENROUTER_MODELS", "google/gemini-3.5-flash,anthropic/claude-sonnet-5.5")
+# Modelos gratuitos têm qualidade e limites menores: só entram se ligados explicitamente.
+OPENROUTER_FREE_FALLBACK = _bool("OPENROUTER_FREE_FALLBACK", False)
+OPENROUTER_APP_URL = os.getenv("OPENROUTER_APP_URL", "https://cyberpulse-ochre.vercel.app")
+
 # Por quanto tempo uma análise salva é reaproveitada antes de ser gerada de novo.
 AI_CACHE_DAYS = int(os.getenv("AI_CACHE_DAYS", "14"))
 
