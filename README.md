@@ -17,20 +17,24 @@ O projeto já está hospedado e funcionando 24/7 na nuvem. Você pode testar tod
 
 Para ter a experiência completa de um Analista de Cibersegurança, siga os passos abaixo no site ao vivo:
 
-### 1. Configure a Inteligência Artificial
+### 1. Configure a Inteligência Artificial (100% gratuito)
 A IA traduz jargões técnicos para uma linguagem clara e diz como corrigir a falha. Clique em qualquer ameaça e,
-no quadro da IA, cole uma ou as duas chaves:
+no quadro da IA, cole uma ou as duas chaves. **As duas são gratuitas:**
 
-| Chave | Custo | Para quê |
-|---|---|---|
-| **Google Gemini** ([gerar chave grátis](https://aistudio.google.com/app/apikey)) | Gratuito | IA principal |
-| **OpenRouter** ([gerar chave](https://openrouter.ai/settings/keys) · [créditos](https://openrouter.ai/settings/credits)) | Pago por uso (centavos por análise) | **Reserva:** assume na hora quando o Gemini está sobrecarregado |
+| Chave | Papel |
+|---|---|
+| **Google Gemini** ([gerar chave grátis](https://aistudio.google.com/app/apikey)) | IA principal, com busca no Google |
+| **OpenRouter** ([gerar chave grátis](https://openrouter.ai/settings/keys)) | **Reserva:** assume na hora quando o Gemini está sobrecarregado |
 
-- Com as duas chaves, se o Gemini falhar, o OpenRouter responde com modelos do mesmo nível (primeiro o mesmo
-  Gemini servido pelo OpenRouter, depois Claude Sonnet), com busca na web e fontes citadas.
+- O OpenRouter usa **somente modelos gratuitos** (`:free`). O código confere no catálogo público que o modelo
+  tem preço zero antes de cada chamada e não usa a busca na web do OpenRouter, que é cobrada. Limite do plano
+  gratuito do OpenRouter: 50 análises por dia por conta.
 - Se as duas IAs falharem e já existir uma análise salva, ela é mostrada com um aviso, em vez de erro.
-- As chaves ficam **só no seu navegador** (nesta aba, ou com *Lembrar neste navegador*) e são repassadas ao backend
-  apenas para chamar a IA: **não são gravadas no banco nem em logs**.
+- **Copiar prompt:** cada vulnerabilidade tem um botão que copia um prompt pronto, com todos os dados da CVE,
+  para colar em qualquer chat de IA (inclusive a IA homologada da sua empresa). Funciona mesmo se as IAs do site
+  estiverem fora do ar.
+- As chaves ficam **só no seu navegador** e são repassadas ao backend apenas para chamar a IA:
+  **não são gravadas no banco nem em logs**.
 - Análises já geradas ficam salvas e aparecem para qualquer pessoa, **mesmo sem chave**.
 
 ### 2. Drible o "Delay" do Governo Americano (Busca Real-Time)
@@ -64,7 +68,7 @@ O detalhamento de cada CVE aparece no modal e em `GET /api/v1/vulnerabilities/{c
 
 - **Backend:** FastAPI (Python), SQLAlchemy, PostgreSQL, APScheduler + cron do GitHub Actions.
 - **Frontend:** React, TypeScript, TailwindCSS.
-- **Inteligência Artificial:** Google Gemini (SDK `google-genai`) com reserva no OpenRouter, busca na web, modelos reserva automáticos e cache.
+- **Inteligência Artificial:** Google Gemini (SDK `google-genai`) com reserva gratuita no OpenRouter, modelos reserva automáticos, cache e prompt copiável.
 - **Deploy Cloud:** Vercel (Frontend) e Render (Backend/Robôs).
 
 ### Rodando Localmente com Docker
@@ -97,8 +101,7 @@ Variáveis de ambiente (modelo completo em [`.env.example`](./.env.example)):
 | `ADMIN_TOKEN` | para o cron | Token longo e aleatório. Sem ele, as rotas `/api/v1/admin/*` ficam desligadas |
 | `NVD_API_KEY` | opcional | [Chave gratuita](https://nvd.nist.gov/developers/request-an-api-key): 10x mais rápido para preencher CVSS |
 | `GEMINI_MODEL` / `GEMINI_FALLBACK_MODEL` | opcional | Troca de modelo sem precisar de deploy |
-| `OPENROUTER_MODELS` | opcional | Modelos da reserva, em ordem. Padrão: `google/gemini-3.5-flash,anthropic/claude-sonnet-5.5` |
-| `OPENROUTER_FREE_FALLBACK` | opcional | `true` para usar modelos gratuitos como último recurso (qualidade menor). Padrão: `false` |
+| `OPENROUTER_MODELS` | opcional | Modelos gratuitos da reserva, em ordem (IDs pagos são ignorados). Padrão: `nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free` |
 
 Comando de start (se não usar o Dockerfile):
 ```bash

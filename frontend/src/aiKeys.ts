@@ -21,7 +21,7 @@ export const PROVIDERS: Record<Provider, {
 }> = {
   gemini: {
     label: 'Google Gemini',
-    tag: 'Gratuito',
+    tag: 'Principal • gratuito',
     storageKey: 'cyberpulse_gemini_key',
     createUrl: 'https://aistudio.google.com/app/apikey',
     createLabel: 'Gerar chave grátis',
@@ -30,12 +30,10 @@ export const PROVIDERS: Record<Provider, {
   },
   openrouter: {
     label: 'OpenRouter',
-    tag: 'Reserva • pago por uso',
+    tag: 'Reserva • gratuito',
     storageKey: 'cyberpulse_openrouter_key',
     createUrl: 'https://openrouter.ai/settings/keys',
-    createLabel: 'Gerar chave',
-    extraUrl: 'https://openrouter.ai/settings/credits',
-    extraLabel: 'Adicionar créditos',
+    createLabel: 'Gerar chave grátis',
     placeholder: 'sk-or-v1-...',
     header: 'X-OpenRouter-Key',
   },

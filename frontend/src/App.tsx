@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import FilterBar from './components/FilterBar';
 import Pagination from './components/Pagination';
 import AiKeysPanel from './components/AiKeysPanel';
+import CopyPromptButton from './components/CopyPromptButton';
 import type { AiKeys, Provider } from './aiKeys';
 import { EMPTY_KEYS, PROVIDERS, hasAnyKey, keyHeaders, loadKeys, removeKey, saveKey } from './aiKeys';
 import type { Facets, Filters } from './filters';
@@ -244,7 +245,9 @@ function App() {
 
   const formatDate = (dateString: string | null) => {
     if (!dateString) return '00/00/0000';
-    return new Date(dateString).toLocaleDateString('pt-BR');
+    // "2026-08-05" sem horário seria lido como meia-noite UTC (dia anterior no Brasil): lê como data local.
+    const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateString) ? `${dateString}T00:00:00` : dateString);
+    return Number.isNaN(d.getTime()) ? dateString : d.toLocaleDateString('pt-BR');
   };
 
   const renderAiAnalysis = (text: string) => {
@@ -612,9 +615,12 @@ function App() {
                                 {getSeverityBadge(vuln.severity)}
                               </td>
                               <td className="whitespace-nowrap py-4 px-3 text-xs">
-                                 <button className="text-emerald-500 font-bold text-[10px] border border-emerald-700 bg-black px-3 py-1.5 uppercase tracking-widest group-hover:bg-emerald-500 group-hover:text-black group-hover:shadow-[0_0_10px_rgba(16,185,129,0.5)] transition-all">
-                                   &gt; DETALHES
-                                 </button>
+                                <div className="flex items-center gap-2">
+                                  <button className="text-emerald-500 font-bold text-[10px] border border-emerald-700 bg-black px-3 py-1.5 uppercase tracking-widest group-hover:bg-emerald-500 group-hover:text-black group-hover:shadow-[0_0_10px_rgba(16,185,129,0.5)] transition-all">
+                                    &gt; DETALHES
+                                  </button>
+                                  <CopyPromptButton vuln={vuln} variant="compact" />
+                                </div>
                               </td>
                             </tr>
                           ))
@@ -754,6 +760,11 @@ function App() {
                             </p>
                           </div>
 
+                          <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                          <div className="flex flex-col items-end gap-1">
+                            <CopyPromptButton vuln={selectedVuln} />
+                            <span className="text-[9px] text-zinc-500 tracking-wider">Cole em qualquer chat de IA (ex.: a IA da sua empresa)</span>
+                          </div>
                           {isKeySaved && !isAiLoading && (
                             <div className="flex flex-col items-end gap-2">
                               <button
@@ -767,6 +778,7 @@ function App() {
                               </button>
                             </div>
                           )}
+                          </div>
                         </div>
                         {(!isKeySaved || showKeys) && (
                           <div className="mt-4">
@@ -800,11 +812,10 @@ function App() {
                         {aiError && (
                           <div className="text-xs text-red-500 bg-red-950/30 p-3 border border-red-900 font-mono">
                             [FALHA] {aiError}
-                            {!aiKeys.openrouter && (
-                              <div className="mt-2 text-zinc-400">
-                                Dica: adicione uma chave do OpenRouter em "Chaves de IA" para ter uma IA reserva quando o Gemini estiver fora do ar.
-                              </div>
-                            )}
+                            <div className="mt-2 text-zinc-400">
+                              Sem esperar: use <b>Copiar prompt para outra IA</b> (acima) e cole no chat de IA de sua preferência.
+                              {!aiKeys.openrouter && ' Ou adicione uma chave gratuita do OpenRouter em "Chaves de IA" como reserva.'}
+                            </div>
                           </div>
                         )}
 

@@ -12,46 +12,81 @@ from app.models import Vulnerability
 REAL_CLIENT = httpx.Client
 GOOD = "**O QUE É A VULNERABILIDADE**\nok\n**COMO VERIFICAR SE VOCÊ ESTÁ VULNERÁVEL**\nx\n**PLANO DE AÇÃO**\ny"
 
-
-def _ok_body(model="google/gemini-3.5-flash"):
-    return {
-        "model": model,
-        "choices": [{"finish_reason": "stop", "message": {
-            "role": "assistant", "content": GOOD,
-            "annotations": [
-                {"type": "url_citation", "url_citation": {"url": "https://msrc.microsoft.com/x", "title": "MSRC"}},
-                {"type": "url_citation", "url_citation": {"url": "http://inseguro.example", "title": "http"}},
-            ],
-        }}],
-    }
+CATALOG = {"data": [
+    {"id": "nvidia/nemotron-3-ultra-550b-a55b:free", "pricing": {"prompt": "0", "completion": "0"}},
+    {"id": "google/gemma-4-31b-it:free", "pricing": {"prompt": "0", "completion": "0"}},
+    {"id": "openrouter/free", "pricing": {"prompt": "0", "completion": "0"}},
+    {"id": "anthropic/claude-sonnet-5.5", "pricing": {"prompt": "0.000002", "completion": "0.00001"}},
+]}
 
 
-def _mock(monkeypatch, handler):
-    requests = []
+def _ok_body(model="nvidia/nemotron-3-ultra-550b-a55b:free"):
+    return {"model": model, "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": GOOD}}]}
 
-    def wrapped(request):
-        requests.append(request)
-        return handler(request)
 
-    monkeypatch.setattr(openrouter.httpx, "Client", lambda **kw: REAL_CLIENT(transport=httpx.MockTransport(wrapped), **kw))
-    return requests
+@pytest.fixture(autouse=True)
+def _reset(monkeypatch):
+    openrouter._catalog.update(free=None, at=0.0)
+    monkeypatch.setattr(config, "OPENROUTER_MODELS",
+                        ["nvidia/nemotron-3-ultra-550b-a55b:free", "google/gemma-4-31b-it:free"])
+
+
+def _mock(monkeypatch, chat_handler, catalog=CATALOG):
+    chats = []
+
+    def handler(request):
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json=catalog) if catalog is not None else httpx.Response(500)
+        chats.append(request)
+        return chat_handler(request)
+
+    monkeypatch.setattr(openrouter.httpx, "Client", lambda **kw: REAL_CLIENT(transport=httpx.MockTransport(handler), **kw))
+    return chats
 
 
 def _vuln():
     return Vulnerability(cve_id="CVE-2024-3094", title="t", source="x", known_exploited=True)
 
 
-def test_request_shape_and_parsing(monkeypatch):
-    reqs = _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body()))
-    text, model, sources = openrouter.generate("sk-or-teste", "prompt")
-    body = json.loads(reqs[0].content)
-    assert reqs[0].headers["Authorization"] == "Bearer sk-or-teste"
-    assert body["models"] == ["google/gemini-3.5-flash", "anthropic/claude-sonnet-5.5"]
-    assert body["plugins"] == [{"id": "web", "max_results": 5}]
-    assert not any(m.endswith(":free") or m == "openrouter/free" for m in body["models"])
-    assert text == GOOD and model == "google/gemini-3.5-flash"
-    assert sources == [{"title": "MSRC", "url": "https://msrc.microsoft.com/x"}]  # só https
+# ---- Nunca gerar custo ----
 
+def test_request_uses_only_free_models_and_no_paid_web_search(monkeypatch):
+    chats = _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body()))
+    text, model = openrouter.generate("sk-or-teste", "prompt")
+    body = json.loads(chats[0].content)
+    assert chats[0].headers["Authorization"] == "Bearer sk-or-teste"
+    assert body["models"] == ["nvidia/nemotron-3-ultra-550b-a55b:free", "google/gemma-4-31b-it:free", "openrouter/free"]
+    assert "plugins" not in body and ":online" not in json.dumps(body)
+    assert text == GOOD and model.endswith(":free")
+
+
+def test_paid_models_in_config_are_ignored(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_MODELS", ["anthropic/claude-sonnet-5.5", "google/gemma-4-31b-it:free"])
+    chats = _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body()))
+    openrouter.generate("k", "p")
+    assert json.loads(chats[0].content)["models"] == ["google/gemma-4-31b-it:free", "openrouter/free"]
+
+
+def test_free_model_removed_from_catalog_is_skipped(monkeypatch):
+    catalog = {"data": [m for m in CATALOG["data"] if not m["id"].startswith("nvidia/")]}
+    chats = _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body()), catalog=catalog)
+    openrouter.generate("k", "p")
+    assert json.loads(chats[0].content)["models"] == ["google/gemma-4-31b-it:free", "openrouter/free"]
+
+
+def test_catalog_offline_still_only_free(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_MODELS", ["openai/gpt-5.2", "google/gemma-4-31b-it:free"])
+    chats = _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body()), catalog=None)
+    openrouter.generate("k", "p")
+    assert json.loads(chats[0].content)["models"] == ["google/gemma-4-31b-it:free", "openrouter/free"]
+
+
+def test_is_free_id():
+    assert openrouter.is_free_id("x/y:free") and openrouter.is_free_id("openrouter/free")
+    assert not openrouter.is_free_id("openrouter/auto") and not openrouter.is_free_id("google/gemini-3.5-flash")
+
+
+# ---- Erros e cascata ----
 
 def test_error_inside_http_200_is_detected(monkeypatch):
     _mock(monkeypatch, lambda r: httpx.Response(200, json={"choices": [{"error": {"code": 502, "message": "down"}}]}))
@@ -62,8 +97,8 @@ def test_error_inside_http_200_is_detected(monkeypatch):
 
 @pytest.mark.parametrize("status,expected,fragment", [
     (401, 401, "CHAVE_INVALIDA_OPENROUTER"),
-    (402, 402, "SEM_CREDITOS_OPENROUTER"),
-    (429, 429, "COTA_ESGOTADA_OPENROUTER"),
+    (429, 429, "50 análises por dia"),
+    (402, 502, "recusou a requisição gratuita"),
     (503, 503, "IA_INDISPONIVEL_OPENROUTER"),
 ])
 def test_errors_are_translated(monkeypatch, status, expected, fragment):
@@ -71,48 +106,28 @@ def test_errors_are_translated(monkeypatch, status, expected, fragment):
     with pytest.raises(ai.AIError) as exc:
         ai.analyze(_vuln(), None, "k")
     assert exc.value.status_code == expected and fragment in exc.value.message
+    assert "crédito" not in exc.value.message.lower()
 
 
-def test_retries_without_web_search_on_provider_error(monkeypatch):
-    calls = []
-
-    def handler(request):
-        calls.append("plugins" in json.loads(request.content))
-        return httpx.Response(502, json={"error": {"code": 502}}) if len(calls) == 1 else httpx.Response(200, json=_ok_body())
-
-    _mock(monkeypatch, handler)
-    assert ai.analyze(_vuln(), None, "k").provider == "openrouter"
-    assert calls == [True, False]
-
-
-def test_gemini_overloaded_falls_back_to_openrouter_without_lite_models(monkeypatch):
-    _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body("anthropic/claude-sonnet-5.5")))
-    with patch("app.ai._analyze_gemini", side_effect=ai.AIError(503, "IA_SOBRECARREGADA")) as gem:
+def test_gemini_failure_falls_back_to_openrouter(monkeypatch):
+    _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body("google/gemma-4-31b-it:free")))
+    with patch("app.ai._analyze_gemini", side_effect=ai.AIError(503, "IA_SOBRECARREGADA")):
         result = ai.analyze(_vuln(), "gemini-key", "or-key")
-    assert result.provider == "openrouter" and result.model == "anthropic/claude-sonnet-5.5"
-    assert gem.call_args.kwargs["use_fallback_models"] is False
+    assert result.provider == "openrouter" and result.model == "google/gemma-4-31b-it:free"
 
 
-def test_gemini_only_keeps_reserve_models():
-    with patch("app.ai._analyze_gemini", return_value=ai.AIResult("t", "m")) as gem:
-        ai.analyze(_vuln(), "gemini-key", None)
-    assert gem.call_args.kwargs["use_fallback_models"] is True
+def test_gemini_success_does_not_touch_openrouter(monkeypatch):
+    chats = _mock(monkeypatch, lambda r: httpx.Response(500))
+    with patch("app.ai._analyze_gemini", return_value=ai.AIResult("t", "gemini-3.5-flash")):
+        assert ai.analyze(_vuln(), "g", "o").model == "gemini-3.5-flash"
+    assert chats == []
 
 
 def test_both_fail_shows_both_reasons(monkeypatch):
-    _mock(monkeypatch, lambda r: httpx.Response(402, json={"error": {"code": 402}}))
+    _mock(monkeypatch, lambda r: httpx.Response(429, json={"error": {"code": 429}}))
     with patch("app.ai._analyze_gemini", side_effect=ai.AIError(503, "IA_SOBRECARREGADA")), pytest.raises(ai.AIError) as exc:
         ai.analyze(_vuln(), "g", "o")
-    assert exc.value.status_code == 402
-    assert "Gemini: IA_SOBRECARREGADA" in exc.value.message and "OpenRouter: SEM_CREDITOS" in exc.value.message
-
-
-def test_free_models_only_when_enabled(monkeypatch):
-    monkeypatch.setattr(config, "OPENROUTER_MODELS", ["google/gemini-3.5-flash"])
-    monkeypatch.setattr(config, "OPENROUTER_FREE_FALLBACK", True)
-    reqs = _mock(monkeypatch, lambda r: httpx.Response(200, json=_ok_body()))
-    openrouter.generate("k", "p")
-    assert json.loads(reqs[0].content)["models"] == ["google/gemini-3.5-flash", "openrouter/free"]
+    assert "Gemini: IA_SOBRECARREGADA" in exc.value.message and "OpenRouter: COTA_ESGOTADA" in exc.value.message
 
 
 # ---- Endpoint ----
@@ -137,9 +152,9 @@ def client():
 
 
 def test_endpoint_accepts_openrouter_key_only(client):
-    with patch("app.ai.analyze", return_value=ai.AIResult(GOOD, "anthropic/claude-sonnet-5.5", provider="openrouter")) as m:
+    with patch("app.ai.analyze", return_value=ai.AIResult(GOOD, "google/gemma-4-31b-it:free", provider="openrouter")) as m:
         r = client.post("/api/v1/vulnerabilities/CVE-2024-0001/analyze", headers={"X-OpenRouter-Key": "or"})
-    assert r.status_code == 200 and r.json()["model"] == "anthropic/claude-sonnet-5.5"
+    assert r.status_code == 200 and r.json()["model"] == "google/gemma-4-31b-it:free"
     assert m.call_args.args[1:] == (None, "or")
 
 

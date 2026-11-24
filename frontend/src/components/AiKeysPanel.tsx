@@ -95,8 +95,8 @@ export default function AiKeysPanel({ keys, remember, onRememberChange, onSave, 
       </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <p className="text-[10px] text-zinc-500 leading-relaxed">
-          Use uma ou as duas. Com as duas, se o Gemini estiver sobrecarregado, o OpenRouter assume na hora,
-          com modelos do mesmo nível. As chaves ficam só no seu navegador.
+          As duas são gratuitas e você pode usar uma ou as duas. Com as duas, se o Gemini estiver sobrecarregado,
+          o OpenRouter assume na hora com modelos gratuitos. As chaves ficam só no seu navegador.
         </p>
         <label className="flex items-center gap-2 text-[10px] text-zinc-500 uppercase tracking-wider cursor-pointer whitespace-nowrap">
           <input type="checkbox" checked={remember} onChange={e => onRememberChange(e.target.checked)} className="accent-blue-500" />

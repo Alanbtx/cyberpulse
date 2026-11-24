@@ -268,7 +268,7 @@ def analyze_vulnerability_with_ai(
     try:
         result = ai.analyze(vuln, gemini_key or None, openrouter_key or None)
     except ai.AIError as e:
-        if vuln.ai_analysis and e.status_code not in (401, 402):
+        if vuln.ai_analysis and e.status_code != 401:
             return _analysis_payload(vuln, cached=True, warning=f"A IA não respondeu agora ({e.message}). Mostrando a última análise salva.")
         raise HTTPException(status_code=e.status_code, detail=e.message)
 

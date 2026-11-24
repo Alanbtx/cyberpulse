@@ -1,7 +1,6 @@
 import feedparser
 import httpx
 import logging
-from datetime import datetime
 from email.utils import parsedate_to_datetime
 from sqlalchemy.orm import Session
 from app.models import Advisory
